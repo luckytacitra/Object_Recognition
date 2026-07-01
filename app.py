@@ -543,7 +543,7 @@ with tab1:
                                 break
                             continue
                         cnt += 1
-                        if cnt % 3 != 0: continue
+                        if cnt % 1 != 0: continue
                         
                         now = time.time()
                         orig = frame.copy()
@@ -682,7 +682,7 @@ with tab1:
                     ok, frame = cap.read()
                     if not ok: break
                     cnt += 1
-                    if cnt % 3 != 0: continue
+                    if cnt % 1 != 0: continue
                     
                     now = cnt / fps
                     orig = frame.copy()
