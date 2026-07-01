@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.0 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.1 (FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -227,10 +227,13 @@ def generate_alert(name, pos_x, area):
         return f"Hati-hati, ada {nama} {pos}. {arah} pelan-pelan."
 
 # ============================================================
-# DETEKSI FRAME
+# DETEKSI FRAME (DENGAN ERROR HANDLING)
 # ============================================================
 def process_frame_detection(frame, model, conf=0.4):
-    if model is None: return frame, []
+    if model is None:
+        return frame, []
+    if frame is None or len(frame.shape) == 0:
+        return frame, []
     try:
         results = model.predict(frame, conf=conf, verbose=False)
         detections = []
@@ -306,11 +309,25 @@ def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
             all_detections.extend(dets)
     return frame_out, all_detections
 
+def safe_display_frame(frame_ph, frame):
+    """Aman menampilkan frame dengan cek validitas"""
+    if frame is not None and len(frame.shape) == 3 and frame.size > 0:
+        try:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_ph.image(frame_rgb, use_container_width=True)
+            return True
+        except Exception as e:
+            logger.error(f"Display error: {e}")
+            return False
+    return False
+
 # ============================================================
 # FUNGSI OCR
 # ============================================================
 def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
     if ocr_engine is None: return "OCR engine tidak tersedia"
+    if frame is None or len(frame.shape) == 0:
+        return "Frame tidak valid"
     try:
         if len(frame.shape) == 3: gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else: gray = frame
@@ -350,7 +367,7 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
         return f"Error: {str(e)[:30]}"
 
 # ─────────────────────────────────────────────────────────────────────
-# LOAD MODELS DENGAN ERROR HANDLING
+# LOAD MODELS
 # ─────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def load_yolo_models(path1='yolo11s.pt', path2=None, path3=None):
@@ -424,7 +441,7 @@ with st.sidebar:
     st.markdown("---")
     
     # ──────────────────────────────────────────────────────────────
-    # MODEL 2 - TANGGA/LUBANG (DENGAN ERROR HANDLING)
+    # MODEL 2 - TANGGA/LUBANG
     # ──────────────────────────────────────────────────────────────
     with st.expander("🏔️ Model 2: Tangga/Lubang"):
         uploaded_model2 = st.file_uploader("Upload best.pt (M2)", type=['pt'], key='m2up')
@@ -435,8 +452,6 @@ with st.sidebar:
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
                         tmp.write(uploaded_model2.read())
                         tmp_path = tmp.name
-                    
-                    # Coba load dengan try-except
                     try:
                         st.session_state.model2 = YOLO(tmp_path)
                         st.success("✅ M2 Dimuat!")
@@ -449,7 +464,7 @@ with st.sidebar:
                 st.error(f"❌ Error: {e}")
     
     # ──────────────────────────────────────────────────────────────
-    # MODEL 3 - RAMBU (DENGAN ERROR HANDLING)
+    # MODEL 3 - RAMBU
     # ──────────────────────────────────────────────────────────────
     with st.expander("🚦 Model 3: Rambu"):
         uploaded_model3 = st.file_uploader("Upload best_rambu.pt (M3)", type=['pt'], key='m3up')
@@ -460,7 +475,6 @@ with st.sidebar:
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
                         tmp.write(uploaded_model3.read())
                         tmp_path = tmp.name
-                    
                     try:
                         st.session_state.model3 = YOLO(tmp_path)
                         st.success("✅ M3 Dimuat!")
@@ -526,7 +540,7 @@ with tab1:
     if show_logs: log_ph = st.expander("📋 Logs").empty()
 
     # ============================================================
-    # WEBCAM
+    # WEBCAM (DENGAN ERROR HANDLING)
     # ============================================================
     if mode == "📹 Webcam":
         run = st.toggle("🎥 Aktifkan Webcam")
@@ -542,9 +556,7 @@ with tab1:
             else:
                 # GITHUB CAMERA FIX
                 cap = None
-                backends_to_try = [
-                    cv2.CAP_V4L2, cv2.CAP_DSHOW, cv2.CAP_ANY, 0,
-                ]
+                backends_to_try = [cv2.CAP_V4L2, cv2.CAP_DSHOW, cv2.CAP_ANY, 0]
                 for backend in backends_to_try:
                     try:
                         test_cap = cv2.VideoCapture(0, backend)
@@ -575,22 +587,41 @@ with tab1:
                                 st.error("❌ Kamera terputus!")
                                 break
                             continue
+                        
+                        # CEK FRAME VALID
+                        if frame is None or frame.size == 0:
+                            continue
+                        
                         cnt += 1
                         if cnt % 3 != 0: continue
                         
                         now = time.time()
                         orig = frame.copy()
                         
-                        frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
-                        frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
+                        # DETEKSI DENGAN ERROR HANDLING
+                        try:
+                            frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
+                        except Exception as e:
+                            logger.error(f"Detection multi error: {e}")
+                            frame_ann = frame.copy()
+                            dets = []
+                        
+                        # TAMPILKAN FRAME DENGAN AMAN
+                        if not safe_display_frame(frame_ph, frame_ann):
+                            # Fallback: tampilkan frame asli
+                            if orig is not None:
+                                safe_display_frame(frame_ph, orig)
+                        
                         st.session_state.last_frame = orig
                         
-                        # OCR - BACA TEKS
+                        # ============================================================
+                        # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
+                        # ============================================================
                         if st.session_state.ocr_triggered_cam and ocr is not None:
                             if cnt % ocr_scan_interval == 0:
                                 with st.spinner("🔍 Reading..."):
                                     text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
-                                if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
+                                if text and text != "Tidak ada teks terdeteksi" and text != "Frame tidak valid" and len(text) > 5:
                                     if text != st.session_state.last_ocr_text:
                                         st.session_state.last_ocr_text = text
                                         ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
@@ -603,7 +634,9 @@ with tab1:
                                     else:
                                         ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                         
+                        # ============================================================
                         # DETEKSI BAHAYA & RAMBU
+                        # ============================================================
                         danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                         rambu = [d for d in dets if is_rambu(d['class'])]
                         
@@ -653,7 +686,7 @@ with tab1:
                     st.success("Webcam dihentikan.")
 
     # ============================================================
-    # UPLOAD VIDEO
+    # UPLOAD VIDEO (DENGAN ERROR HANDLING)
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
@@ -701,6 +734,11 @@ with tab1:
                 while True:
                     ok, frame = cap.read()
                     if not ok: break
+                    
+                    # CEK FRAME VALID
+                    if frame is None or frame.size == 0:
+                        continue
+                    
                     cnt += 1
                     if cnt % 3 != 0: continue
                     
@@ -709,17 +747,30 @@ with tab1:
                     
                     prog.progress(min(cnt/max(total,1), 1.0), text=f"Frame {cnt}/{total} ({now:.1f}s)")
                     
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
-                    frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
+                    # DETEKSI DENGAN ERROR HANDLING
+                    try:
+                        frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
+                    except Exception as e:
+                        logger.error(f"Detection multi error: {e}")
+                        frame_ann = frame.copy()
+                        dets = []
+                    
+                    # TAMPILKAN FRAME DENGAN AMAN
+                    if not safe_display_frame(frame_ph, frame_ann):
+                        if orig is not None:
+                            safe_display_frame(frame_ph, orig)
+                    
                     st.session_state.last_frame = orig
                     
-                    # OCR - BACA TEKS
+                    # ============================================================
+                    # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
+                    # ============================================================
                     if st.session_state.ocr_triggered and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
                             with st.spinner("🔍 Reading..."):
                                 text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
-                            if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
+                            if text and text != "Tidak ada teks terdeteksi" and text != "Frame tidak valid" and len(text) > 5:
                                 if text != st.session_state.last_ocr_text:
                                     st.session_state.last_ocr_text = text
                                     ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
@@ -732,7 +783,9 @@ with tab1:
                                 else:
                                     ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                     
+                    # ============================================================
                     # DETEKSI BAHAYA & RAMBU
+                    # ============================================================
                     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                     rambu = [d for d in dets if is_rambu(d['class'])]
                     
@@ -807,7 +860,7 @@ with tab2:
                         img_ph.image(rgb, use_container_width=True)
                         text = perform_ocr_on_frame(rgb, st.session_state.ocr_engine, ocr_min_conf)
                         res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                        if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
+                        if text and text != "Tidak ada teks terdeteksi" and text != "Frame tidak valid" and len(text) > 5 and enable_tts:
                             audio = get_audio_bytes(f"Ada tulisan: {text}")
                             if audio:
                                 aud_ph.empty()
@@ -825,7 +878,7 @@ with tab2:
             img_ph.image(img, use_container_width=True)
             text = perform_ocr_on_frame(arr, st.session_state.ocr_engine, ocr_min_conf)
             res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-            if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
+            if text and text != "Tidak ada teks terdeteksi" and text != "Frame tidak valid" and len(text) > 5 and enable_tts:
                 audio = get_audio_bytes(f"Ada tulisan: {text}")
                 if audio:
                     aud_ph.empty()
@@ -867,6 +920,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v4.0 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v4.1</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
