@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+env/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# File sementara aplikasi ini
+*.mp4
+*.mp3
+*.wav
+temp_*
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# File pribadi yang tidak perlu ikut repo
+*.docx
+*.ipynb
+*.jpeg
+*.jpg
