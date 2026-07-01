@@ -286,7 +286,7 @@ def process_frame_detection(frame, model, conf=0.4):
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     label = f"{cls_name} {conf_score:.2f}"
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         
         return frame, detections
     except Exception as e:
