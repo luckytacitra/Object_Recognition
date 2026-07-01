@@ -688,14 +688,13 @@ with tab1:
                     frame = cv2.resize(frame, (480, 360)) 
                     # 3. Gunakan logika deteksi yang efisien
                     # Pastikan conf_threshold diturunkan agar lebih sensitif
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold=0.25)
                     
                     now = cnt / fps
                     orig = frame.copy()
                     
                     prog.progress(min(cnt/max(total,1), 1.0), text=f"Frame {cnt}/{total} ({now:.1f}s)")
                     
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
+                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf)
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
                     
