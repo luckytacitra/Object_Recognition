@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.9 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.0 (FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -113,7 +113,7 @@ session_defaults = {
     'ocr_triggered': False, 'ocr_triggered_cam': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
-    'last_ocr_text': '',          # Untuk cegah suara berulang
+    'last_ocr_text': '',
 }
 for key, default_value in session_defaults.items():
     if key not in st.session_state:
@@ -127,7 +127,6 @@ def add_log(msg):
 # FUNGSI AUDIO (ANTI ERROR / DUPLICATE ID)
 # ============================================================
 def play_audio_safe(placeholder, audio_bytes):
-    """Memutar audio - SETIAP KALI BUAT ELEMEN BARU"""
     if audio_bytes:
         b64 = base64.b64encode(audio_bytes).decode()
         unique_id = f"audio_{int(time.time()*1000)}_{random.randint(1000,9999)}"
@@ -351,7 +350,7 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
         return f"Error: {str(e)[:30]}"
 
 # ─────────────────────────────────────────────────────────────────────
-# LOAD MODELS
+# LOAD MODELS DENGAN ERROR HANDLING
 # ─────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def load_yolo_models(path1='yolo11s.pt', path2=None, path3=None):
@@ -359,24 +358,34 @@ def load_yolo_models(path1='yolo11s.pt', path2=None, path3=None):
         from ultralytics import YOLO
         models = {}
         try: models['m1'] = YOLO(path1)
-        except: models['m1'] = None
+        except Exception as e:
+            logger.error(f"Error loading model1: {e}")
+            models['m1'] = None
         if path2:
             try: models['m2'] = YOLO(path2)
-            except: models['m2'] = None
+            except Exception as e:
+                logger.error(f"Error loading model2: {e}")
+                models['m2'] = None
         else: models['m2'] = None
         if path3:
             try: models['m3'] = YOLO(path3)
-            except: models['m3'] = None
+            except Exception as e:
+                logger.error(f"Error loading model3: {e}")
+                models['m3'] = None
         else: models['m3'] = None
         return models
-    except: return {}
+    except Exception as e:
+        logger.error(f"Error loading models: {e}")
+        return {}
 
 @st.cache_resource(show_spinner=False)
 def load_ocr():
     try:
         import easyocr
         return easyocr.Reader(['id', 'en'], gpu=False)
-    except: return None
+    except Exception as e:
+        logger.error(f"Error loading OCR: {e}")
+        return None
 
 # ─────────────────────────────────────────────────────────────────────
 # HEADER
@@ -413,31 +422,72 @@ with st.sidebar:
             st.success("✅ OCR Dimuat!")
     
     st.markdown("---")
-    with st.expander("🏔️ Model 2 (best.pt)"):
-        up2 = st.file_uploader("Upload best.pt", type=['pt'], key='m2up')
-        if up2 and st.button("Load M2"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up2.read())
-            from ultralytics import YOLO
-            st.session_state.model2 = YOLO(tmp.name)
-            st.success("✅ M2 Dimuat!")
     
-    with st.expander("🚦 Model 3 (best_rambu.pt)"):
-        up3 = st.file_uploader("Upload best_rambu.pt", type=['pt'], key='m3up')
-        if up3 and st.button("Load M3"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up3.read())
-            from ultralytics import YOLO
-            st.session_state.model3 = YOLO(tmp.name)
-            st.success("✅ M3 Dimuat!")
+    # ──────────────────────────────────────────────────────────────
+    # MODEL 2 - TANGGA/LUBANG (DENGAN ERROR HANDLING)
+    # ──────────────────────────────────────────────────────────────
+    with st.expander("🏔️ Model 2: Tangga/Lubang"):
+        uploaded_model2 = st.file_uploader("Upload best.pt (M2)", type=['pt'], key='m2up')
+        if uploaded_model2 and st.button("Load M2", key="load_m2"):
+            try:
+                with st.spinner("Loading Model 2..."):
+                    from ultralytics import YOLO
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                        tmp.write(uploaded_model2.read())
+                        tmp_path = tmp.name
+                    
+                    # Coba load dengan try-except
+                    try:
+                        st.session_state.model2 = YOLO(tmp_path)
+                        st.success("✅ M2 Dimuat!")
+                        add_log("Model 2 (Tangga/Lubang) loaded")
+                    except Exception as e:
+                        st.error(f"❌ Gagal load model: {e}")
+                        st.info("💡 Pastikan file best.pt adalah model YOLO yang valid dan tidak corrupt")
+                        add_log(f"Model 2 error: {e}", "warn")
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+    
+    # ──────────────────────────────────────────────────────────────
+    # MODEL 3 - RAMBU (DENGAN ERROR HANDLING)
+    # ──────────────────────────────────────────────────────────────
+    with st.expander("🚦 Model 3: Rambu"):
+        uploaded_model3 = st.file_uploader("Upload best_rambu.pt (M3)", type=['pt'], key='m3up')
+        if uploaded_model3 and st.button("Load M3", key="load_m3"):
+            try:
+                with st.spinner("Loading Model 3..."):
+                    from ultralytics import YOLO
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                        tmp.write(uploaded_model3.read())
+                        tmp_path = tmp.name
+                    
+                    try:
+                        st.session_state.model3 = YOLO(tmp_path)
+                        st.success("✅ M3 Dimuat!")
+                        add_log("Model 3 (Rambu) loaded")
+                    except Exception as e:
+                        st.error(f"❌ Gagal load model: {e}")
+                        st.info("💡 Pastikan file best_rambu.pt adalah model YOLO yang valid dan tidak corrupt")
+                        add_log(f"Model 3 error: {e}", "warn")
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
     
     st.markdown("---")
+    
+    # ──────────────────────────────────────────────────────────────
+    # STATUS
+    # ──────────────────────────────────────────────────────────────
     s1 = "✅" if st.session_state.model1 else "⚠️"
     s2 = "✅" if st.session_state.model2 else "⚠️"
     s3 = "✅" if st.session_state.model3 else "⚠️"
     so = "✅" if st.session_state.ocr_engine else "⚠️"
     st.markdown(f'<div class="pills"><span class="pill pill-model">{s1} M1</span><span class="pill pill-model">{s2} M2</span><span class="pill pill-model">{s3} M3</span><span class="pill pill-model">{so} OCR</span></div>', unsafe_allow_html=True)
     
+    st.markdown("---")
+    
+    # ──────────────────────────────────────────────────────────────
+    # SETTINGS
+    # ──────────────────────────────────────────────────────────────
     conf_threshold = st.slider("Confidence", 0.1, 0.9, 0.4, 0.05)
     enable_audio = st.checkbox("🔊 Audio", value=True)
     alert_cooldown = st.slider("Cooldown (s)", 2, 10, 5)
@@ -535,15 +585,12 @@ with tab1:
                         frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                         st.session_state.last_frame = orig
                         
-                        # ============================================================
-                        # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
-                        # ============================================================
+                        # OCR - BACA TEKS
                         if st.session_state.ocr_triggered_cam and ocr is not None:
                             if cnt % ocr_scan_interval == 0:
                                 with st.spinner("🔍 Reading..."):
                                     text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                                 if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                    # CEK APAKAH TEKS BERBEDA
                                     if text != st.session_state.last_ocr_text:
                                         st.session_state.last_ocr_text = text
                                         ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
@@ -556,9 +603,7 @@ with tab1:
                                     else:
                                         ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                         
-                        # ============================================================
                         # DETEKSI BAHAYA & RAMBU
-                        # ============================================================
                         danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                         rambu = [d for d in dets if is_rambu(d['class'])]
                         
@@ -603,28 +648,24 @@ with tab1:
                         time.sleep(0.01)
                     
                     cap.release()
-                    # Reset OCR text saat webcam mati
                     st.session_state.last_ocr_text = ''
                     st.session_state.ocr_triggered_cam = False
                     st.success("Webcam dihentikan.")
 
     # ============================================================
-    # UPLOAD VIDEO (DENGAN RESET OCR)
+    # UPLOAD VIDEO
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
         
-        # ──────────────────────────────────────────────────────────
-        # RESET OCR TRIGGER SAAT UPLOAD VIDEO BARU
-        # ──────────────────────────────────────────────────────────
+        # RESET OCR SAAT UPLOAD VIDEO BARU
         if uploaded is not None:
             current_name = uploaded.name
             if st.session_state.last_uploaded_name != current_name:
-                # Video baru! Reset semua flag OCR
                 st.session_state.ocr_triggered = False
                 st.session_state.ocr_frame_count = 0
                 st.session_state.last_uploaded_name = current_name
-                st.session_state.last_ocr_text = ''  # Reset teks terakhir
+                st.session_state.last_ocr_text = ''
                 ocr_ph.empty()
                 st.info("🔄 Video baru diupload. OCR di-reset. Klik 'Baca Teks' lagi jika ingin scan.")
         
@@ -672,16 +713,13 @@ with tab1:
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
                     
-                    # ============================================================
-                    # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
-                    # ============================================================
+                    # OCR - BACA TEKS
                     if st.session_state.ocr_triggered and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
                             with st.spinner("🔍 Reading..."):
                                 text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                             if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                # CEK APAKAH TEKS BERBEDA
                                 if text != st.session_state.last_ocr_text:
                                     st.session_state.last_ocr_text = text
                                     ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
@@ -694,9 +732,7 @@ with tab1:
                                 else:
                                     ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                     
-                    # ============================================================
                     # DETEKSI BAHAYA & RAMBU
-                    # ============================================================
                     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                     rambu = [d for d in dets if is_rambu(d['class'])]
                     
@@ -742,7 +778,6 @@ with tab1:
                 st.success("✅ Selesai!")
                 st.metric("Total Frames", cnt)
                 
-                # Reset flag setelah selesai
                 st.session_state.ocr_triggered = False
                 
             finally:
@@ -832,6 +867,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v3.9 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v4.0 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
