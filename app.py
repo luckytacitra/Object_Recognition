@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.9 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.0 (FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -13,11 +13,6 @@ from io import BytesIO
 from collections import defaultdict
 import logging
 import random
-
-# ─────────────────────────────────────────────────────────────────────
-# GITHUB DEPLOYMENT - CAMERA SETTINGS
-# ─────────────────────────────────────────────────────────────────────
-IS_GITHUB = 'GITHUB_CODESPACES_PORT' in os.environ or 'STREAMLIT_SHARING' in os.environ
 
 # ─────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -113,7 +108,7 @@ session_defaults = {
     'ocr_triggered': False, 'ocr_triggered_cam': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
-    'last_ocr_text': '',          # Untuk cegah suara berulang
+    'last_ocr_text': '',          # Track teks OCR terakhir agar tidak duplikat
 }
 for key, default_value in session_defaults.items():
     if key not in st.session_state:
@@ -299,13 +294,16 @@ def process_frame_detection(frame, model, conf=0.4):
         return frame, []
 
 def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
-    frame_out = frame.copy()
+    """Memproses frame secara berurutan pada M1, M2, dan M3"""
+    frame_annotated = frame.copy()
     all_detections = []
-    for model in [model1, model2, model3]:
-        if model is not None:
-            frame_out, dets = process_frame_detection(frame_out, model, conf)
+    
+    for mdl in [model1, model2, model3]:
+        if mdl is not None:
+            frame_annotated, dets = process_frame_detection(frame_annotated, mdl, conf)
             all_detections.extend(dets)
-    return frame_out, all_detections
+            
+    return frame_annotated, all_detections
 
 # ============================================================
 # FUNGSI OCR
@@ -413,23 +411,31 @@ with st.sidebar:
             st.success("✅ OCR Dimuat!")
     
     st.markdown("---")
-    with st.expander("🏔️ Model 2 (best.pt)"):
-        up2 = st.file_uploader("Upload best.pt", type=['pt'], key='m2up')
-        if up2 and st.button("Load M2"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up2.read())
-            from ultralytics import YOLO
-            st.session_state.model2 = YOLO(tmp.name)
-            st.success("✅ M2 Dimuat!")
     
-    with st.expander("🚦 Model 3 (best_rambu.pt)"):
-        up3 = st.file_uploader("Upload best_rambu.pt", type=['pt'], key='m3up')
+    # ----------------------------------------------------
+    # INFO PENTING UPLOAD FILE
+    # ----------------------------------------------------
+    st.info("💡 Info: Mengunggah file model (.pt) memakan waktu tergantung pada ukuran file dan kecepatan internet Anda (Bisa 1-5 menit).")
+    
+    with st.expander("🏔️ Model 2: Tangga/Lubang"):
+        up2 = st.file_uploader("Upload best.pt (M2)", type=['pt'], key='m2up')
+        if up2 and st.button("Load M2"):
+            with st.spinner("Sedang memuat Model 2, mohon tunggu..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                    tmp.write(up2.read())
+                from ultralytics import YOLO
+                st.session_state.model2 = YOLO(tmp.name)
+                st.success("✅ M2 Dimuat!")
+            
+    with st.expander("🚦 Model 3: Rambu"):
+        up3 = st.file_uploader("Upload best_rambu.pt (M3)", type=['pt'], key='m3up')
         if up3 and st.button("Load M3"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up3.read())
-            from ultralytics import YOLO
-            st.session_state.model3 = YOLO(tmp.name)
-            st.success("✅ M3 Dimuat!")
+            with st.spinner("Sedang memuat Model 3, mohon tunggu..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                    tmp.write(up3.read())
+                from ultralytics import YOLO
+                st.session_state.model3 = YOLO(tmp.name)
+                st.success("✅ M3 Dimuat!")
     
     st.markdown("---")
     s1 = "✅" if st.session_state.model1 else "⚠️"
@@ -484,6 +490,7 @@ with tab1:
         
         if btn_baca:
             st.session_state.ocr_triggered_cam = True
+            st.session_state.last_ocr_text = '' # Reset agar dibaca lagi jika ditekan manual
             st.info("🔍 OCR akan membaca teks dari frame webcam...")
         
         if run:
@@ -543,8 +550,12 @@ with tab1:
                                 with st.spinner("🔍 Reading..."):
                                     text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                                 if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                    # CEK APAKAH TEKS BERBEDA
-                                    if text != st.session_state.last_ocr_text:
+                                    
+                                    # Normalisasi Teks untuk mencegah duplikat berulang
+                                    norm_text = re.sub(r'[^a-zA-Z0-9]', '', text).lower()
+                                    norm_last = re.sub(r'[^a-zA-Z0-9]', '', st.session_state.last_ocr_text).lower()
+                                    
+                                    if norm_text != norm_last:
                                         st.session_state.last_ocr_text = text
                                         ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
                                         if enable_tts:
@@ -554,7 +565,7 @@ with tab1:
                                                 play_audio_safe(audio_ocr_ph, audio)
                                                 st.success(f"🔊 Suara diputar: {text[:30]}...")
                                     else:
-                                        ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
+                                        ocr_ph.markdown(f'<div class="ocr-result">📝 {text} <br><small>(Teks sama, tidak dibaca ulang)</small></div>', unsafe_allow_html=True)
                         
                         # ============================================================
                         # DETEKSI BAHAYA & RAMBU
@@ -609,7 +620,7 @@ with tab1:
                     st.success("Webcam dihentikan.")
 
     # ============================================================
-    # UPLOAD VIDEO (DENGAN RESET OCR)
+    # UPLOAD VIDEO
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
@@ -620,7 +631,6 @@ with tab1:
         if uploaded is not None:
             current_name = uploaded.name
             if st.session_state.last_uploaded_name != current_name:
-                # Video baru! Reset semua flag OCR
                 st.session_state.ocr_triggered = False
                 st.session_state.ocr_frame_count = 0
                 st.session_state.last_uploaded_name = current_name
@@ -635,6 +645,7 @@ with tab1:
         if btn_baca:
             st.session_state.ocr_triggered = True
             st.session_state.ocr_frame_count = 0
+            st.session_state.last_ocr_text = '' # Reset text agar terbaca jika di-klik manual
             st.info("🔍 OCR akan membaca teks sepanjang video...")
         
         if uploaded and btn_start:
@@ -681,8 +692,12 @@ with tab1:
                             with st.spinner("🔍 Reading..."):
                                 text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                             if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                # CEK APAKAH TEKS BERBEDA
-                                if text != st.session_state.last_ocr_text:
+                                
+                                # Normalisasi Teks untuk mencegah duplikat
+                                norm_text = re.sub(r'[^a-zA-Z0-9]', '', text).lower()
+                                norm_last = re.sub(r'[^a-zA-Z0-9]', '', st.session_state.last_ocr_text).lower()
+                                
+                                if norm_text != norm_last:
                                     st.session_state.last_ocr_text = text
                                     ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
                                     if enable_tts:
@@ -692,7 +707,7 @@ with tab1:
                                             play_audio_safe(audio_ocr_ph, audio)
                                             st.success(f"🔊 Suara diputar: {text[:30]}...")
                                 else:
-                                    ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
+                                    ocr_ph.markdown(f'<div class="ocr-result">📝 {text} <br><small>(Teks sama, tidak dibaca ulang)</small></div>', unsafe_allow_html=True)
                     
                     # ============================================================
                     # DETEKSI BAHAYA & RAMBU
@@ -832,6 +847,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v3.9 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v4.0 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
