@@ -543,7 +543,10 @@ with tab1:
                                 break
                             continue
                         cnt += 1
-                        if cnt % 1 != 0: continue
+                        frame = cv2.resize(frame, (480, 360)) 
+                        # 3. Gunakan logika deteksi yang efisien
+                        # Pastikan conf_threshold diturunkan agar lebih sensitif
+                        frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold=0.25)
                         
                         now = time.time()
                         orig = frame.copy()
@@ -682,7 +685,10 @@ with tab1:
                     ok, frame = cap.read()
                     if not ok: break
                     cnt += 1
-                    if cnt % 1 != 0: continue
+                    frame = cv2.resize(frame, (480, 360)) 
+                    # 3. Gunakan logika deteksi yang efisien
+                    # Pastikan conf_threshold diturunkan agar lebih sensitif
+                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold=0.25)
                     
                     now = cnt / fps
                     orig = frame.copy()
