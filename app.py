@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.8 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.9 (FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -113,6 +113,7 @@ session_defaults = {
     'ocr_triggered': False, 'ocr_triggered_cam': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
+    'last_ocr_text': '',          # Untuk cegah suara berulang
 }
 for key, default_value in session_defaults.items():
     if key not in st.session_state:
@@ -123,7 +124,7 @@ def add_log(msg):
     st.session_state.log = st.session_state.log[:30]
 
 # ============================================================
-# FUNGSI AUDIO (ANTI ERROR / DUPLICATE ID) - REVISI
+# FUNGSI AUDIO (ANTI ERROR / DUPLICATE ID)
 # ============================================================
 def play_audio_safe(placeholder, audio_bytes):
     """Memutar audio - SETIAP KALI BUAT ELEMEN BARU"""
@@ -135,7 +136,9 @@ def play_audio_safe(placeholder, audio_bytes):
                 <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
             </audio>
             <script>
-                document.getElementById("{unique_id}").play();
+                setTimeout(function() {{
+                    document.getElementById("{unique_id}").play();
+                }}, 100);
             </script>
         """
         placeholder.markdown(html_code, unsafe_allow_html=True)
@@ -533,23 +536,28 @@ with tab1:
                         st.session_state.last_frame = orig
                         
                         # ============================================================
-                        # OCR - BACA TEKS (AUDIO SETIAP FRAME)
+                        # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
                         # ============================================================
                         if st.session_state.ocr_triggered_cam and ocr is not None:
                             if cnt % ocr_scan_interval == 0:
                                 with st.spinner("🔍 Reading..."):
                                     text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
-                                if text and text != "Tidak ada teks terdeteksi":
-                                    ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                                    if len(text) > 5 and enable_tts:
-                                        audio = get_audio_bytes(f"Ada tulisan: {text}")
-                                        if audio:
-                                            audio_ocr_ph.empty()
-                                            play_audio_safe(audio_ocr_ph, audio)
-                                            st.success(f"🔊 Suara diputar: {text[:30]}...")
+                                if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
+                                    # CEK APAKAH TEKS BERBEDA
+                                    if text != st.session_state.last_ocr_text:
+                                        st.session_state.last_ocr_text = text
+                                        ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
+                                        if enable_tts:
+                                            audio = get_audio_bytes(f"Ada tulisan: {text}")
+                                            if audio:
+                                                audio_ocr_ph.empty()
+                                                play_audio_safe(audio_ocr_ph, audio)
+                                                st.success(f"🔊 Suara diputar: {text[:30]}...")
+                                    else:
+                                        ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                         
                         # ============================================================
-                        # DETEKSI BAHAYA & RAMBU (SUARA TETAP BERJALAN)
+                        # DETEKSI BAHAYA & RAMBU
                         # ============================================================
                         danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                         rambu = [d for d in dets if is_rambu(d['class'])]
@@ -595,6 +603,9 @@ with tab1:
                         time.sleep(0.01)
                     
                     cap.release()
+                    # Reset OCR text saat webcam mati
+                    st.session_state.last_ocr_text = ''
+                    st.session_state.ocr_triggered_cam = False
                     st.success("Webcam dihentikan.")
 
     # ============================================================
@@ -613,7 +624,7 @@ with tab1:
                 st.session_state.ocr_triggered = False
                 st.session_state.ocr_frame_count = 0
                 st.session_state.last_uploaded_name = current_name
-                # Kosongkan tampilan OCR
+                st.session_state.last_ocr_text = ''  # Reset teks terakhir
                 ocr_ph.empty()
                 st.info("🔄 Video baru diupload. OCR di-reset. Klik 'Baca Teks' lagi jika ingin scan.")
         
@@ -662,24 +673,29 @@ with tab1:
                     st.session_state.last_frame = orig
                     
                     # ============================================================
-                    # OCR - BACA TEKS (AUDIO SETIAP FRAME)
+                    # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
                     # ============================================================
                     if st.session_state.ocr_triggered and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
                             with st.spinner("🔍 Reading..."):
                                 text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
-                            if text and text != "Tidak ada teks terdeteksi":
-                                ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                                if len(text) > 5 and enable_tts:
-                                    audio = get_audio_bytes(f"Ada tulisan: {text}")
-                                    if audio:
-                                        audio_ocr_ph.empty()
-                                        play_audio_safe(audio_ocr_ph, audio)
-                                        st.success(f"🔊 Suara diputar: {text[:30]}...")
+                            if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
+                                # CEK APAKAH TEKS BERBEDA
+                                if text != st.session_state.last_ocr_text:
+                                    st.session_state.last_ocr_text = text
+                                    ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
+                                    if enable_tts:
+                                        audio = get_audio_bytes(f"Ada tulisan: {text}")
+                                        if audio:
+                                            audio_ocr_ph.empty()
+                                            play_audio_safe(audio_ocr_ph, audio)
+                                            st.success(f"🔊 Suara diputar: {text[:30]}...")
+                                else:
+                                    ocr_ph.markdown(f'<div class="ocr-result">📝 {text} (sama, tidak diulang)</div>', unsafe_allow_html=True)
                     
                     # ============================================================
-                    # DETEKSI BAHAYA & RAMBU (SUARA TETAP BERJALAN)
+                    # DETEKSI BAHAYA & RAMBU
                     # ============================================================
                     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                     rambu = [d for d in dets if is_rambu(d['class'])]
@@ -816,6 +832,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v3.8 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v3.9 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
