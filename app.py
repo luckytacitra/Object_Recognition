@@ -403,20 +403,23 @@ with st.sidebar:
             st.success("✅ OCR Dimuat!")
     
     st.markdown("---")
-    with st.expander("🔁 Update Model dari Hasil Training Baru (opsional)"):
-        st.caption("Pakai ini kalau punya model hasil training ulang dengan data baru, tanpa perlu push ulang ke GitHub.")
-        target_model = st.radio("Ganti model yang mana?", ["Model 2 (best.pt)", "Model 3 (best_rambu.pt)"], key='target_model_upload')
-        up_new = st.file_uploader("Upload file .pt hasil training baru", type=['pt'], key='newmodelup')
-        if up_new and st.button("Load Model Baru"):
+    with st.expander("🔁 Ganti Model Manual (opsional)"):
+        st.caption("Hanya perlu dipakai kalau mau override model tanpa push ulang ke GitHub.")
+        up2 = st.file_uploader("Upload best.pt", type=['pt'], key='m2up')
+        if up2 and st.button("Load M2 dari upload"):
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up_new.read())
+                tmp.write(up2.read())
             from ultralytics import YOLO
-            if target_model == "Model 2 (best.pt)":
-                st.session_state.model2 = YOLO(tmp.name)
-                st.success("✅ Model 2 diperbarui!")
-            else:
-                st.session_state.model3 = YOLO(tmp.name)
-                st.success("✅ Model 3 diperbarui!")
+            st.session_state.model2 = YOLO(tmp.name)
+            st.success("✅ M2 Dimuat!")
+
+        up3 = st.file_uploader("Upload best_rambu.pt", type=['pt'], key='m3up')
+        if up3 and st.button("Load M3 dari upload"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                tmp.write(up3.read())
+            from ultralytics import YOLO
+            st.session_state.model3 = YOLO(tmp.name)
+            st.success("✅ M3 Dimuat!")
     
     st.markdown("---")
     s1 = "✅" if st.session_state.model1 else "⚠️"
