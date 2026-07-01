@@ -286,12 +286,16 @@ def process_frame_detection(frame, model, conf=0.4):
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     # Ganti bagian cv2.putText kamu dengan ini agar lebih rapi:
+                    # --- LOGIKA LABEL ANTI-TUMPUK ---
                     label = f"{cls_name} {conf_score:.2f}"
                     (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    # Gambar kotak latar belakang teks agar mudah dibaca
-                    cv2.rectangle(frame, (x1, y1 - 20), (x1 + w, y1), color, -1) 
-                    # Gambar teks dengan warna putih agar kontras
-                    cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    # Jika ini objek kedua atau lebih dalam frame yang sama, geser ke bawah
+                    # (Kita asumsikan y1 adalah posisi awal)
+                    offset = 25 * len(detections)
+                    # Gambar latar belakang teks
+                    cv2.rectangle(frame, (x1, y1 - 20 - offset), (x1 + w, y1 - offset), color, -1)
+                    # Gambar teks
+                    cv2.putText(frame, label, (x1, y1 - 5 - offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         return frame, detections
     except Exception as e:
