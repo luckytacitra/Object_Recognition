@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.7 (STABLE)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v3.8 (FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -12,11 +12,11 @@ from pathlib import Path
 from io import BytesIO
 from collections import defaultdict
 import logging
+import random
 
 # ─────────────────────────────────────────────────────────────────────
 # GITHUB DEPLOYMENT - CAMERA SETTINGS
 # ─────────────────────────────────────────────────────────────────────
-# Deteksi apakah berjalan di GitHub Codespaces / Streamlit Cloud
 IS_GITHUB = 'GITHUB_CODESPACES_PORT' in os.environ or 'STREAMLIT_SHARING' in os.environ
 
 # ─────────────────────────────────────────────────────────────────────
@@ -112,6 +112,7 @@ session_defaults = {
     'last_alert_time': defaultdict(lambda: -99.0),
     'ocr_triggered': False, 'ocr_triggered_cam': False,
     'ocr_frame_count': 0,
+    'last_uploaded_name': None,
 }
 for key, default_value in session_defaults.items():
     if key not in st.session_state:
@@ -122,18 +123,20 @@ def add_log(msg):
     st.session_state.log = st.session_state.log[:30]
 
 # ============================================================
-# FUNGSI AUDIO (ANTI ERROR / DUPLICATE ID)
+# FUNGSI AUDIO (ANTI ERROR / DUPLICATE ID) - REVISI
 # ============================================================
 def play_audio_safe(placeholder, audio_bytes):
-    """Memutar audio tanpa st.audio untuk mencegah StreamlitDuplicateElementId"""
+    """Memutar audio - SETIAP KALI BUAT ELEMEN BARU"""
     if audio_bytes:
         b64 = base64.b64encode(audio_bytes).decode()
-        unique_id = str(time.time()).replace('.', '')
-        # Memaksa re-render dengan ID unik
+        unique_id = f"audio_{int(time.time()*1000)}_{random.randint(1000,9999)}"
         html_code = f"""
-            <audio autoplay="true" style="display:none;" id="audio_{unique_id}">
+            <audio autoplay="true" style="display:none;" id="{unique_id}">
                 <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
             </audio>
+            <script>
+                document.getElementById("{unique_id}").play();
+            </script>
         """
         placeholder.markdown(html_code, unsafe_allow_html=True)
 
@@ -470,7 +473,7 @@ with tab1:
     if show_logs: log_ph = st.expander("📋 Logs").empty()
 
     # ============================================================
-    # WEBCAM (DENGAN GITHUB FALLBACK)
+    # WEBCAM
     # ============================================================
     if mode == "📹 Webcam":
         run = st.toggle("🎥 Aktifkan Webcam")
@@ -484,17 +487,11 @@ with tab1:
             if st.session_state.model1 is None:
                 st.error("⚠️ Load YOLO dulu!")
             else:
-                # ──────────────────────────────────────────────────
-                # GITHUB CAMERA FIX - COBA BEBERAPA BACKEND
-                # ──────────────────────────────────────────────────
+                # GITHUB CAMERA FIX
                 cap = None
                 backends_to_try = [
-                    cv2.CAP_V4L2,      # Linux / GitHub Codespaces
-                    cv2.CAP_DSHOW,     # Windows
-                    cv2.CAP_ANY,       # Auto
-                    0,                 # Default
+                    cv2.CAP_V4L2, cv2.CAP_DSHOW, cv2.CAP_ANY, 0,
                 ]
-                
                 for backend in backends_to_try:
                     try:
                         test_cap = cv2.VideoCapture(0, backend)
@@ -504,9 +501,7 @@ with tab1:
                         test_cap.release()
                     except:
                         continue
-                
                 if cap is None:
-                    # Fallback terakhir
                     cap = cv2.VideoCapture(0)
                 
                 if not cap.isOpened():
@@ -521,7 +516,6 @@ with tab1:
                     while run:
                         ok, frame = cap.read()
                         if not ok: 
-                            # Jika kamera tiba-tiba mati, coba reconnect
                             cap.release()
                             cap = cv2.VideoCapture(0)
                             if not cap.isOpened():
@@ -538,7 +532,9 @@ with tab1:
                         frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                         st.session_state.last_frame = orig
                         
-                        # OCR - BACA TEKS
+                        # ============================================================
+                        # OCR - BACA TEKS (AUDIO SETIAP FRAME)
+                        # ============================================================
                         if st.session_state.ocr_triggered_cam and ocr is not None:
                             if cnt % ocr_scan_interval == 0:
                                 with st.spinner("🔍 Reading..."):
@@ -547,9 +543,14 @@ with tab1:
                                     ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
                                     if len(text) > 5 and enable_tts:
                                         audio = get_audio_bytes(f"Ada tulisan: {text}")
-                                        play_audio_safe(audio_ocr_ph, audio)
+                                        if audio:
+                                            audio_ocr_ph.empty()
+                                            play_audio_safe(audio_ocr_ph, audio)
+                                            st.success(f"🔊 Suara diputar: {text[:30]}...")
                         
-                        # DETEKSI BAHAYA & RAMBU
+                        # ============================================================
+                        # DETEKSI BAHAYA & RAMBU (SUARA TETAP BERJALAN)
+                        # ============================================================
                         danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                         rambu = [d for d in dets if is_rambu(d['class'])]
                         
@@ -560,7 +561,9 @@ with tab1:
                                 msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
                                 warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
                                 audio = get_audio_bytes(msg)
-                                play_audio_safe(audio_danger_ph, audio)
+                                if audio:
+                                    audio_danger_ph.empty()
+                                    play_audio_safe(audio_danger_ph, audio)
                                 st.session_state.last_alert_time[key] = now
                                 status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
                         elif rambu and enable_audio:
@@ -570,7 +573,9 @@ with tab1:
                                 msg = generate_rambu_alert(d['class'])
                                 warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
                                 audio = get_audio_bytes(msg)
-                                play_audio_safe(audio_rambu_ph, audio)
+                                if audio:
+                                    audio_rambu_ph.empty()
+                                    play_audio_safe(audio_rambu_ph, audio)
                                 st.session_state.last_alert_time[key] = now
                                 status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
                         else:
@@ -593,10 +598,24 @@ with tab1:
                     st.success("Webcam dihentikan.")
 
     # ============================================================
-    # UPLOAD VIDEO
+    # UPLOAD VIDEO (DENGAN RESET OCR)
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
+        
+        # ──────────────────────────────────────────────────────────
+        # RESET OCR TRIGGER SAAT UPLOAD VIDEO BARU
+        # ──────────────────────────────────────────────────────────
+        if uploaded is not None:
+            current_name = uploaded.name
+            if st.session_state.last_uploaded_name != current_name:
+                # Video baru! Reset semua flag OCR
+                st.session_state.ocr_triggered = False
+                st.session_state.ocr_frame_count = 0
+                st.session_state.last_uploaded_name = current_name
+                # Kosongkan tampilan OCR
+                ocr_ph.empty()
+                st.info("🔄 Video baru diupload. OCR di-reset. Klik 'Baca Teks' lagi jika ingin scan.")
         
         col1, col2 = st.columns(2)
         with col1: btn_start = st.button("▶️ Start Detection", use_container_width=True)
@@ -642,7 +661,9 @@ with tab1:
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
                     
-                    # OCR - BACA TEKS
+                    # ============================================================
+                    # OCR - BACA TEKS (AUDIO SETIAP FRAME)
+                    # ============================================================
                     if st.session_state.ocr_triggered and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -652,10 +673,14 @@ with tab1:
                                 ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
                                 if len(text) > 5 and enable_tts:
                                     audio = get_audio_bytes(f"Ada tulisan: {text}")
-                                    play_audio_safe(audio_ocr_ph, audio)
-                                    st.success("🔊 Suara diputar!")
+                                    if audio:
+                                        audio_ocr_ph.empty()
+                                        play_audio_safe(audio_ocr_ph, audio)
+                                        st.success(f"🔊 Suara diputar: {text[:30]}...")
                     
-                    # DETEKSI BAHAYA & RAMBU
+                    # ============================================================
+                    # DETEKSI BAHAYA & RAMBU (SUARA TETAP BERJALAN)
+                    # ============================================================
                     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                     rambu = [d for d in dets if is_rambu(d['class'])]
                     
@@ -666,7 +691,9 @@ with tab1:
                             msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
                             warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
                             audio = get_audio_bytes(msg)
-                            play_audio_safe(audio_danger_ph, audio)
+                            if audio:
+                                audio_danger_ph.empty()
+                                play_audio_safe(audio_danger_ph, audio)
                             st.session_state.last_alert_time[key] = now
                             status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
                     elif rambu and enable_audio:
@@ -676,7 +703,9 @@ with tab1:
                             msg = generate_rambu_alert(d['class'])
                             warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
                             audio = get_audio_bytes(msg)
-                            play_audio_safe(audio_rambu_ph, audio)
+                            if audio:
+                                audio_rambu_ph.empty()
+                                play_audio_safe(audio_rambu_ph, audio)
                             st.session_state.last_alert_time[key] = now
                             status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
                     else:
@@ -696,6 +725,9 @@ with tab1:
                 prog.empty()
                 st.success("✅ Selesai!")
                 st.metric("Total Frames", cnt)
+                
+                # Reset flag setelah selesai
+                st.session_state.ocr_triggered = False
                 
             finally:
                 try: os.unlink(vid_path)
@@ -726,8 +758,10 @@ with tab2:
                         res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
                         if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
                             audio = get_audio_bytes(f"Ada tulisan: {text}")
-                            play_audio_safe(aud_ph, audio)
-                            st.success("🔊 Audio playing...")
+                            if audio:
+                                aud_ph.empty()
+                                play_audio_safe(aud_ph, audio)
+                                st.success("🔊 Audio playing...")
                     cap.release()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -742,8 +776,10 @@ with tab2:
             res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
             if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
                 audio = get_audio_bytes(f"Ada tulisan: {text}")
-                play_audio_safe(aud_ph, audio)
-                st.success("🔊 Audio playing...")
+                if audio:
+                    aud_ph.empty()
+                    play_audio_safe(aud_ph, audio)
+                    st.success("🔊 Audio playing...")
 
 # ═════════════════════════════════════════════════════════════════════
 # TAB 3: STATISTICS
@@ -780,6 +816,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v3.7 (STABLE)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v3.8 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
