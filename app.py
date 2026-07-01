@@ -228,7 +228,7 @@ def generate_alert(name, pos_x, area):
 def process_frame_detection(frame, model, conf=0.4):
     if model is None: return frame, []
     try:
-        results = model.predict(frame, conf=conf, verbose=False)
+        results = model.predict(frame, conf=conf, iou=0.4, verbose=False)
         detections = []
         if results and len(results) > 0:
             result = results[0]
