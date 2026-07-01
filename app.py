@@ -694,7 +694,7 @@ with tab1:
                     
                     prog.progress(min(cnt/max(total,1), 1.0), text=f"Frame {cnt}/{total} ({now:.1f}s)")
                     
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf)
+                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3)
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
                     
