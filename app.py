@@ -14,6 +14,12 @@ from collections import defaultdict
 import logging
 
 # ─────────────────────────────────────────────────────────────────────
+# GITHUB DEPLOYMENT - CAMERA SETTINGS
+# ─────────────────────────────────────────────────────────────────────
+# Deteksi apakah berjalan di GitHub Codespaces / Streamlit Cloud
+IS_GITHUB = 'GITHUB_CODESPACES_PORT' in os.environ or 'STREAMLIT_SHARING' in os.environ
+
+# ─────────────────────────────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
@@ -342,16 +348,20 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
 # LOAD MODELS
 # ─────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
-def load_yolo_models(path1='yolo11s.pt', path2='best.pt', path3='best_rambu.pt'):
+def load_yolo_models(path1='yolo11s.pt', path2=None, path3=None):
     try:
         from ultralytics import YOLO
         models = {}
-        try: models['m1'] = YOLO(path1) if os.path.exists(path1) else None
+        try: models['m1'] = YOLO(path1)
         except: models['m1'] = None
-        try: models['m2'] = YOLO(path2) if os.path.exists(path2) else None
-        except: models['m2'] = None
-        try: models['m3'] = YOLO(path3) if os.path.exists(path3) else None
-        except: models['m3'] = None
+        if path2:
+            try: models['m2'] = YOLO(path2)
+            except: models['m2'] = None
+        else: models['m2'] = None
+        if path3:
+            try: models['m3'] = YOLO(path3)
+            except: models['m3'] = None
+        else: models['m3'] = None
         return models
     except: return {}
 
@@ -383,18 +393,12 @@ st.divider()
 with st.sidebar:
     st.markdown("### ⚙️ Pengaturan")
     
-    if st.button("📥 Load Semua Model YOLO", use_container_width=True):
-        with st.spinner("Loading M1, M2, M3..."):
+    if st.button("📥 Load YOLO", use_container_width=True):
+        with st.spinner("Loading..."):
             models = load_yolo_models()
             st.session_state.model1 = models.get('m1')
-            st.session_state.model2 = models.get('m2')
-            st.session_state.model3 = models.get('m3')
-            add_log("YOLO models loaded")
-            loaded = sum(m is not None for m in models.values())
-            if loaded == 0:
-                st.error("⚠️ Tidak ada model ditemukan. Pastikan file .pt ada di folder repo.")
-            else:
-                st.success(f"✅ {loaded}/3 Model Dimuat!")
+            add_log("YOLO loaded")
+            st.success("✅ YOLO Dimuat!")
     
     if st.button("📥 Load OCR", use_container_width=True):
         with st.spinner("Loading..."):
@@ -403,20 +407,23 @@ with st.sidebar:
             st.success("✅ OCR Dimuat!")
     
     st.markdown("---")
-    with st.expander("🔁 Update Model dari Hasil Training Baru (opsional)"):
-        st.caption("Pakai ini kalau punya model hasil training ulang dengan data baru, tanpa perlu push ulang ke GitHub.")
-        target_model = st.radio("Ganti model yang mana?", ["Model 2 (best.pt)", "Model 3 (best_rambu.pt)"], key='target_model_upload')
-        up_new = st.file_uploader("Upload file .pt hasil training baru", type=['pt'], key='newmodelup')
-        if up_new and st.button("Load Model Baru"):
+    with st.expander("🏔️ Model 2 (best.pt)"):
+        up2 = st.file_uploader("Upload best.pt", type=['pt'], key='m2up')
+        if up2 and st.button("Load M2"):
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
-                tmp.write(up_new.read())
+                tmp.write(up2.read())
             from ultralytics import YOLO
-            if target_model == "Model 2 (best.pt)":
-                st.session_state.model2 = YOLO(tmp.name)
-                st.success("✅ Model 2 diperbarui!")
-            else:
-                st.session_state.model3 = YOLO(tmp.name)
-                st.success("✅ Model 3 diperbarui!")
+            st.session_state.model2 = YOLO(tmp.name)
+            st.success("✅ M2 Dimuat!")
+    
+    with st.expander("🚦 Model 3 (best_rambu.pt)"):
+        up3 = st.file_uploader("Upload best_rambu.pt", type=['pt'], key='m3up')
+        if up3 and st.button("Load M3"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as tmp:
+                tmp.write(up3.read())
+            from ultralytics import YOLO
+            st.session_state.model3 = YOLO(tmp.name)
+            st.success("✅ M3 Dimuat!")
     
     st.markdown("---")
     s1 = "✅" if st.session_state.model1 else "⚠️"
@@ -463,83 +470,127 @@ with tab1:
     if show_logs: log_ph = st.expander("📋 Logs").empty()
 
     # ============================================================
-    # WEBCAM (via st.camera_input - kompatibel dengan Streamlit Cloud)
-    # Catatan: cv2.VideoCapture(0) mengakses kamera SERVER, bukan kamera
-    # pengguna, jadi tidak berfungsi saat dideploy online. st.camera_input()
-    # mengakses kamera lewat browser pengguna. Alur logikanya (deteksi,
-    # alert, OCR) tetap sama persis, cuma sumber frame-nya diganti dari
-    # "stream otomatis" menjadi "1 foto per klik".
+    # WEBCAM (DENGAN GITHUB FALLBACK)
     # ============================================================
     if mode == "📹 Webcam":
-        st.caption("📸 Kamera diakses lewat browser Anda. Ambil foto untuk dianalisis.")
-        cam_shot = st.camera_input("Aktifkan Kamera")
+        run = st.toggle("🎥 Aktifkan Webcam")
         btn_baca = st.button("📖 Baca Teks")
         
         if btn_baca:
             st.session_state.ocr_triggered_cam = True
-            st.info("🔍 OCR akan membaca teks dari foto...")
+            st.info("🔍 OCR akan membaca teks dari frame webcam...")
         
-        if cam_shot is not None:
+        if run:
             if st.session_state.model1 is None:
                 st.error("⚠️ Load YOLO dulu!")
             else:
-                from PIL import Image
-                pil_img = Image.open(cam_shot)
-                orig = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-                m1, m2, m3 = st.session_state.model1, st.session_state.model2, st.session_state.model3
-                ocr = st.session_state.ocr_engine
-                now = time.time()
-
-                frame_ann, dets = process_frame_detection_multi(orig, m1, m2, m3, conf_threshold)
-                frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
-                st.session_state.last_frame = orig
-                st.session_state.detection_history.extend(dets)
-
-                # OCR - BACA TEKS
-                if st.session_state.ocr_triggered_cam and ocr is not None:
-                    with st.spinner("🔍 Reading..."):
-                        text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
-                    if text and text != "Tidak ada teks terdeteksi":
-                        ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                        if len(text) > 5 and enable_tts:
-                            audio = get_audio_bytes(f"Ada tulisan: {text}")
-                            play_audio_safe(audio_ocr_ph, audio)
-                elif st.session_state.ocr_triggered_cam and ocr is None:
-                    st.error("⚠️ Load OCR dulu!")
-
-                # DETEKSI BAHAYA & RAMBU
-                danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
-                rambu = [d for d in dets if is_rambu(d['class'])]
-
-                if danger and enable_audio:
-                    d = danger[0]
-                    key = d['class']
-                    if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
-                        msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
-                        warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
-                        audio = get_audio_bytes(msg)
-                        play_audio_safe(audio_danger_ph, audio)
-                        st.session_state.last_alert_time[key] = now
-                        status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
-                elif rambu and enable_audio:
-                    d = rambu[0]
-                    key = f"rambu_{d['class']}"
-                    if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
-                        msg = generate_rambu_alert(d['class'])
-                        warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
-                        audio = get_audio_bytes(msg)
-                        play_audio_safe(audio_rambu_ph, audio)
-                        st.session_state.last_alert_time[key] = now
-                        status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
+                # ──────────────────────────────────────────────────
+                # GITHUB CAMERA FIX - COBA BEBERAPA BACKEND
+                # ──────────────────────────────────────────────────
+                cap = None
+                backends_to_try = [
+                    cv2.CAP_V4L2,      # Linux / GitHub Codespaces
+                    cv2.CAP_DSHOW,     # Windows
+                    cv2.CAP_ANY,       # Auto
+                    0,                 # Default
+                ]
+                
+                for backend in backends_to_try:
+                    try:
+                        test_cap = cv2.VideoCapture(0, backend)
+                        if test_cap.isOpened():
+                            cap = test_cap
+                            break
+                        test_cap.release()
+                    except:
+                        continue
+                
+                if cap is None:
+                    # Fallback terakhir
+                    cap = cv2.VideoCapture(0)
+                
+                if not cap.isOpened():
+                    st.error("❌ Webcam error! Pastikan kamera tersedia.")
                 else:
-                    warn_ph.markdown('<div class="alert-success">✅ Aman</div>', unsafe_allow_html=True)
-                    status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ok">● Safe</span></div>', unsafe_allow_html=True)
-
-                m_det.metric("Detections", len(dets))
-                m_danger.metric("⚠️ Danger", len(danger))
-                if show_logs:
-                    log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts,msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    m1, m2, m3 = st.session_state.model1, st.session_state.model2, st.session_state.model3
+                    ocr = st.session_state.ocr_engine
+                    cnt, start = 0, time.time()
+                    
+                    while run:
+                        ok, frame = cap.read()
+                        if not ok: 
+                            # Jika kamera tiba-tiba mati, coba reconnect
+                            cap.release()
+                            cap = cv2.VideoCapture(0)
+                            if not cap.isOpened():
+                                st.error("❌ Kamera terputus!")
+                                break
+                            continue
+                        cnt += 1
+                        if cnt % 3 != 0: continue
+                        
+                        now = time.time()
+                        orig = frame.copy()
+                        
+                        frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
+                        frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
+                        st.session_state.last_frame = orig
+                        
+                        # OCR - BACA TEKS
+                        if st.session_state.ocr_triggered_cam and ocr is not None:
+                            if cnt % ocr_scan_interval == 0:
+                                with st.spinner("🔍 Reading..."):
+                                    text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
+                                if text and text != "Tidak ada teks terdeteksi":
+                                    ocr_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
+                                    if len(text) > 5 and enable_tts:
+                                        audio = get_audio_bytes(f"Ada tulisan: {text}")
+                                        play_audio_safe(audio_ocr_ph, audio)
+                        
+                        # DETEKSI BAHAYA & RAMBU
+                        danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
+                        rambu = [d for d in dets if is_rambu(d['class'])]
+                        
+                        if danger and enable_audio:
+                            d = danger[0]
+                            key = d['class']
+                            if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
+                                msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
+                                warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
+                                audio = get_audio_bytes(msg)
+                                play_audio_safe(audio_danger_ph, audio)
+                                st.session_state.last_alert_time[key] = now
+                                status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
+                        elif rambu and enable_audio:
+                            d = rambu[0]
+                            key = f"rambu_{d['class']}"
+                            if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
+                                msg = generate_rambu_alert(d['class'])
+                                warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
+                                audio = get_audio_bytes(msg)
+                                play_audio_safe(audio_rambu_ph, audio)
+                                st.session_state.last_alert_time[key] = now
+                                status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
+                        else:
+                            warn_ph.markdown('<div class="alert-success">✅ Aman</div>', unsafe_allow_html=True)
+                            status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ok">● Safe</span></div>', unsafe_allow_html=True)
+                        
+                        m_det.metric("Detections", len(dets))
+                        m_danger.metric("⚠️ Danger", len(danger))
+                        elapsed = time.time() - start
+                        m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed>0 else "0")
+                        if show_logs:
+                            log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts,msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                        
+                        if btn_baca and not st.session_state.ocr_triggered_cam:
+                            st.session_state.ocr_triggered_cam = True
+                        
+                        time.sleep(0.01)
+                    
+                    cap.release()
+                    st.success("Webcam dihentikan.")
 
     # ============================================================
     # UPLOAD VIDEO
@@ -660,22 +711,24 @@ with tab2:
     img_ph, res_ph, aud_ph = st.empty(), st.empty(), st.empty()
     
     if mode2 == "📷 Capture":
-        cam_shot2 = st.camera_input("Ambil Foto untuk Dibaca")
-        if cam_shot2 is not None:
+        if st.button("📸 Capture & Read"):
             if st.session_state.ocr_engine is None:
                 st.error("⚠️ Load OCR dulu!")
             else:
                 try:
-                    from PIL import Image
-                    pil_img = Image.open(cam_shot2)
-                    rgb = cv2.resize(np.array(pil_img.convert('RGB')), (640, 480))
-                    img_ph.image(rgb, use_container_width=True)
-                    text = perform_ocr_on_frame(rgb, st.session_state.ocr_engine, ocr_min_conf)
-                    res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                    if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
-                        audio = get_audio_bytes(f"Ada tulisan: {text}")
-                        play_audio_safe(aud_ph, audio)
-                        st.success("🔊 Audio playing...")
+                    cap = cv2.VideoCapture(0)
+                    ret, frame = cap.read()
+                    if ret:
+                        frame = cv2.resize(frame, (640,480))
+                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        img_ph.image(rgb, use_container_width=True)
+                        text = perform_ocr_on_frame(rgb, st.session_state.ocr_engine, ocr_min_conf)
+                        res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
+                        if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
+                            audio = get_audio_bytes(f"Ada tulisan: {text}")
+                            play_audio_safe(aud_ph, audio)
+                            st.success("🔊 Audio playing...")
+                    cap.release()
                 except Exception as e:
                     st.error(f"Error: {e}")
     else:
