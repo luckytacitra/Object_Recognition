@@ -1,21 +1,6 @@
 # =====================================================================
 # ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v5.0 (LIVE)
 # =====================================================================
-# PERUBAHAN DARI v4.2:
-# 1. WEBCAM LIVE: pakai streamlit-webrtc -> video jalan real-time,
-#    deteksi jalan otomatis, ada tombol START/STOP (on/off kamera)
-#    >> WAJIB: pip install streamlit-webrtc av
-# 2. FIX DETEKSI RINTANGAN: model rintangan (M2) dijalankan dengan
-#    conf internal RENDAH (0.15) karena model custom biasanya
-#    confidence-nya di bawah slider 0.4 -> sebelumnya lubang/tangga
-#    dibuang YOLO sebelum sampai ke logika risk_level.
-#    Min area untuk rintangan diturunkan ke 0.005.
-# 3. ALERT SEKALI: bahaya diumumkan SATU KALI per objek lengkap
-#    dengan instruksi. Diulang hanya jika objek hilang >15 detik
-#    lalu muncul lagi.
-# 4. OCR LEBIH AKURAT: upscale lebih besar, denoise, allowlist
-#    karakter, default confidence dinaikkan (typo berkurang).
-# =====================================================================
 
 import streamlit as st
 import cv2, os, re, time, base64, tempfile, queue
@@ -49,7 +34,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────
-# CSS (sama seperti v4.2)
+# CSS
 # ─────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -95,9 +80,8 @@ session_defaults = {
     'model1': None, 'model2': None, 'model3': None, 'ocr_engine': None,
     'last_frame': None, 'log': [], 'detection_history': [],
     'last_alert_time': defaultdict(lambda: -99.0),
-    # Untuk sistem "umumkan sekali":
-    'danger_last_seen': {},      # class -> waktu terakhir terlihat
-    'danger_announced': set(),   # class yang sudah diumumkan
+    'danger_last_seen': {},      
+    'danger_announced': set(),   
     'rambu_last_seen': {},
     'rambu_announced': set(),
     'ocr_triggered': False,
@@ -228,7 +212,6 @@ def normalize_ocr_text(text):
 # ============================================================
 # DETEKSI FRAME
 # ============================================================
-# Kata kunci kategori (dipakai di beberapa tempat)
 OBSTACLE_KW = ['pothole', 'lubang', 'hole', 'stairs', 'stair', 'step', 'tangga',
                'obstacle', 'rintangan', 'road-barrier', 'barrier',
                'pembatas', 'pole', 'tiang']
@@ -237,10 +220,6 @@ VEHICLE_KW = ['car', 'mobil', 'bus', 'truck', 'truk', 'vehicle', 'kendaraan',
 PERSON_KW = ['person', 'orang']
 
 def process_frame_detection(frame, model, conf=0.4, min_area=0.015):
-    """
-    conf     : confidence minimum yang dikirim ke YOLO predict
-    min_area : rasio area minimum agar deteksi diterima
-    """
     if model is None: return frame, []
     try:
         results = model.predict(frame, conf=conf, iou=0.4, verbose=False)
@@ -265,16 +244,12 @@ def process_frame_detection(frame, model, conf=0.4, min_area=0.015):
                     area = (x2 - x1) * (y2 - y1)
                     area_ratio = area / (frame_w * frame_h)
 
-                    # Rintangan boleh lebih kecil (lubang di jalan itu kecil di frame)
                     effective_min_area = 0.005 if is_obstacle else min_area
                     if area_ratio < effective_min_area: continue
 
                     pos_x = ((x1 + x2) / 2) / frame_w
 
                     if is_obstacle:
-                        # Rintangan = prioritas tertinggi untuk tunanetra.
-                        # Threshold sengaja rendah: lebih baik false alarm
-                        # daripada lubang tidak terdeteksi.
                         if area_ratio > 0.06: risk_level = 'BAHAYA'
                         elif area_ratio > 0.02: risk_level = 'WASPADA'
                         else: risk_level = 'WASPADA' if conf_score > 0.30 else 'AMAN'
@@ -312,14 +287,6 @@ def process_frame_detection(frame, model, conf=0.4, min_area=0.015):
         return frame, []
 
 def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
-    """
-    M1 (COCO umum)   : pakai conf dari slider
-    M2 (lubang/tangga): conf internal RENDAH (0.15) — INI FIX UTAMANYA.
-                        Model custom hasil training kecil biasanya punya
-                        confidence 0.2-0.35, kalau dipaksa conf=0.4
-                        deteksinya dibuang YOLO sebelum sampai ke logika kita.
-    M3 (rambu)       : conf sedang (0.25)
-    """
     frame_annotated = frame.copy()
     all_detections = []
 
@@ -329,7 +296,7 @@ def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
         all_detections.extend(dets)
 
     if model2 is not None:
-        obstacle_conf = min(conf, 0.15)  # selalu rendah untuk rintangan
+        obstacle_conf = min(conf, 0.15)
         frame_annotated, dets = process_frame_detection(
             frame_annotated, model2, conf=obstacle_conf, min_area=0.005)
         all_detections.extend(dets)
@@ -343,10 +310,8 @@ def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
     return frame_annotated, all_detections
 
 # ============================================================
-# FUNGSI OCR (v5: lebih akurat, typo berkurang)
+# FUNGSI OCR
 # ============================================================
-# Allowlist: hanya karakter yang wajar untuk teks Indonesia/Inggris.
-# Ini mencegah EasyOCR "menebak" simbol aneh -> typo berkurang drastis.
 OCR_ALLOWLIST = ('ABCDEFGHIJKLMNOPQRSTUVWXYZ'
                  'abcdefghijklmnopqrstuvwxyz'
                  '0123456789 .,-:;/()!?%&@')
@@ -361,23 +326,19 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.45):
         else:
             gray = frame
 
-        # 1. Upscale agresif — EasyOCR jauh lebih akurat di gambar besar
         h, w = gray.shape
         if w < 1000:
             scale = 1000 / w
             gray = cv2.resize(gray, (1000, int(h * scale)),
                               interpolation=cv2.INTER_CUBIC)
 
-        # 2. Denoise dulu (noise = sumber typo terbesar)
         denoised = cv2.fastNlMeansDenoising(gray, None, h=10,
                                             templateWindowSize=7,
                                             searchWindowSize=21)
 
-        # 3. Perbaiki kontras
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
 
-        # 4. Baca dengan parameter ketat + allowlist
         results = None
         try:
             results = ocr_engine.readtext(
@@ -398,7 +359,6 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.45):
             texts = []
             for (bbox, text, conf) in results:
                 text = text.strip()
-                # Buang token pendek/confidence rendah = sumber typo
                 if len(text) >= 2 and conf >= min_conf:
                     texts.append(text)
             if texts:
@@ -410,22 +370,16 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.45):
         return f"Error: {str(e)[:30]}"
 
 # ============================================================
-# ALERT "SEKALI UMUMKAN" (v5)
+# ALERT "SEKALI UMUMKAN"
 # ============================================================
-REAPPEAR_WINDOW = 15.0  # detik: objek hilang selama ini -> boleh diumumkan lagi
+REAPPEAR_WINDOW = 15.0
 
 def handle_alerts_once(dets, now_time, enable_audio,
                        warn_ph, status_ph, audio_ph):
-    """
-    BAHAYA/WASPADA diumumkan SATU KALI per objek (per kelas), lengkap
-    dengan instruksi. Diulang hanya kalau objek hilang > REAPPEAR_WINDOW
-    detik lalu muncul lagi.
-    """
     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if is_rambu(d['class'])]
 
-    # Bersihkan objek yang sudah lama tidak terlihat -> boleh alert lagi nanti
     for key in list(st.session_state.danger_announced):
         last = st.session_state.danger_last_seen.get(key, -999)
         if now_time - last > REAPPEAR_WINDOW:
@@ -437,7 +391,6 @@ def handle_alerts_once(dets, now_time, enable_audio,
 
     announced_something = False
 
-    # PRIORITAS 1: BAHAYA
     if danger:
         d = danger[0]
         key = d['class']
@@ -459,7 +412,6 @@ def handle_alerts_once(dets, now_time, enable_audio,
             '<span class="pill pill-danger">● BAHAYA</span></div>',
             unsafe_allow_html=True)
 
-    # PRIORITAS 2: WASPADA
     elif waspada:
         d = waspada[0]
         key = f"w_{d['class']}"
@@ -481,7 +433,6 @@ def handle_alerts_once(dets, now_time, enable_audio,
             '<span class="pill pill-danger" style="background:#fff5e0;color:#cc8800;border-color:#ffcc66;">● WASPADA</span></div>',
             unsafe_allow_html=True)
 
-    # PRIORITAS 3: RAMBU
     elif rambu:
         d = rambu[0]
         key = d['class']
@@ -569,10 +520,10 @@ if WEBRTC_OK:
             self.model2 = None
             self.model3 = None
             self.conf = 0.4
-            self.frame_skip = 2       # deteksi tiap 2 frame agar lancar
+            self.frame_skip = 2
             self._cnt = 0
             self._last_dets = []
-            self.latest_raw = None    # frame mentah untuk OCR
+            self.latest_raw = None
             self.result_queue = queue.Queue(maxsize=5)
 
         def recv(self, frame):
@@ -589,7 +540,6 @@ if WEBRTC_OK:
                     pass
                 img = ann
             else:
-                # Gambar ulang box terakhir supaya tidak kedip
                 for d in self._last_dets:
                     x1, y1, x2, y2 = d['bbox']
                     if d['risk_level'] == 'BAHAYA': color = (0, 0, 255)
