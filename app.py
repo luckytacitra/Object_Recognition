@@ -1,5 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.0 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v4.1 (FIXED)
 # =====================================================================
 
 import streamlit as st
@@ -108,7 +108,8 @@ session_defaults = {
     'ocr_triggered': False, 'ocr_triggered_cam': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
-    'last_ocr_text': '',          # Track teks OCR terakhir agar tidak duplikat
+    'last_ocr_text': '',
+    'last_danger_alert': {},  # Track danger alert per object class
 }
 for key, default_value in session_defaults.items():
     if key not in st.session_state:
@@ -285,17 +286,12 @@ def process_frame_detection(frame, model, conf=0.4):
                     else: color = (0, 255, 0)
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    # Di dalam loop deteksi (di bawah baris 'cls_name = ...')
-                    # Kita buat label yang lebih tebal dan kontras
                     label = f"{get_indo_name(cls_name)} {conf_score:.2f}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.7  # Perbesar ukuran font
-                    thickness = 2     # Pertebal font
+                    font_scale = 0.7
+                    thickness = 2
                     (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-                    # 1. Gambar kotak latar belakang (background) teks agar TULISAN TERBACA JELAS
-                    # Kotak ini berwarna hijau pekat agar kontras dengan warna teks putih
                     cv2.rectangle(frame, (x1, y1 - text_height - 15), (x1 + text_width + 5, y1), (0, 128, 0), -1)
-                    # 2. Gambar teks berwarna putih di atas kotak hijau
                     cv2.putText(frame, label, (x1, y1 - 10), font, font_scale, (255, 255, 255), thickness)
         
         return frame, detections
@@ -316,7 +312,7 @@ def process_frame_detection_multi(frame, model1, model2, model3, conf=0.4):
     return frame_annotated, all_detections
 
 # ============================================================
-# FUNGSI OCR
+# FUNGSI OCR (IMPROVED - BETTER TEXT CLEANING)
 # ============================================================
 def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
     if ocr_engine is None: return "OCR engine tidak tersedia"
@@ -348,7 +344,9 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
             texts = []
             for (bbox, text, conf) in results:
                 text = text.strip()
-                text = re.sub(r'[^a-zA-Z0-9\s\.,!?\-]', '', text)
+                # IMPROVED: Jangan terlalu agresif hapus karakter
+                # Hanya hapus karakter yang tidak berguna (bukan alphanumeric atau spasi)
+                text = re.sub(r'[^\w\s\.,!?\-]', '', text, flags=re.UNICODE)
                 if len(text) > 1 and conf > min_conf: texts.append(text)
             if texts:
                 result_text = ' '.join(texts)
@@ -357,6 +355,14 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
         return "Tidak ada teks terdeteksi"
     except Exception as e:
         return f"Error: {str(e)[:30]}"
+
+def normalize_ocr_text(text):
+    """Normalisasi teks OCR untuk perbandingan (lebih akurat)"""
+    # Hapus spasi berlebihan
+    norm = ' '.join(text.split())
+    # Ubah ke lowercase untuk perbandingan case-insensitive
+    norm = norm.lower()
+    return norm
 
 # ─────────────────────────────────────────────────────────────────────
 # LOAD MODELS
@@ -385,6 +391,46 @@ def load_ocr():
         import easyocr
         return easyocr.Reader(['id', 'en'], gpu=False)
     except: return None
+
+# ─────────────────────────────────────────────────────────────────────
+# WEBCAM HELPER (IMPROVED)
+# ─────────────────────────────────────────────────────────────────────
+def open_webcam_safe():
+    """Open webcam dengan multiple backend fallback"""
+    backends = []
+    
+    # Platform-specific backend selection
+    if os.name == 'nt':  # Windows
+        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_V4L2, cv2.CAP_ANY]
+    else:  # Linux/Mac
+        backends = [cv2.CAP_V4L2, cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
+    
+    for backend in backends:
+        try:
+            cap = cv2.VideoCapture(0, backend)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                # Test frame
+                ret, _ = cap.read()
+                if ret:
+                    return cap
+                cap.release()
+        except:
+            continue
+    
+    # Fallback ke default
+    try:
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            return cap
+    except:
+        pass
+    
+    return None
 
 # ─────────────────────────────────────────────────────────────────────
 # HEADER
@@ -422,9 +468,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # ----------------------------------------------------
-    # INFO PENTING UPLOAD FILE
-    # ----------------------------------------------------
     st.info("💡 Info: Mengunggah file model (.pt) memakan waktu tergantung pada ukuran file dan kecepatan internet Anda (Bisa 1-5 menit).")
     
     with st.expander("🏔️ Model 2: Tangga/Lubang"):
@@ -479,7 +522,6 @@ with tab1:
     warn_ph = st.empty()
     ocr_ph = st.empty()
     
-    # Placeholder Audio
     audio_danger_ph = st.empty()
     audio_rambu_ph = st.empty()
     audio_ocr_ph = st.empty()
@@ -500,73 +542,52 @@ with tab1:
         
         if btn_baca:
             st.session_state.ocr_triggered_cam = True
-            st.session_state.last_ocr_text = '' # Reset agar dibaca lagi jika ditekan manual
+            st.session_state.last_ocr_text = ''
             st.info("🔍 OCR akan membaca teks dari frame webcam...")
         
         if run:
             if st.session_state.model1 is None:
                 st.error("⚠️ Load YOLO dulu!")
             else:
-                # GITHUB CAMERA FIX
-                cap = None
-                backends_to_try = [
-                    cv2.CAP_V4L2, cv2.CAP_DSHOW, cv2.CAP_ANY, 0,
-                ]
-                for backend in backends_to_try:
-                    try:
-                        test_cap = cv2.VideoCapture(0, backend)
-                        if test_cap.isOpened():
-                            cap = test_cap
-                            break
-                        test_cap.release()
-                    except:
-                        continue
-                if cap is None:
-                    cap = cv2.VideoCapture(0)
+                cap = open_webcam_safe()
                 
-                if not cap.isOpened():
-                    st.error("❌ Webcam error! Pastikan kamera tersedia.")
+                if cap is None:
+                    st.error("❌ Webcam tidak dapat diakses! Pastikan:\n1. Kamera terpasang dan aktif\n2. Aplikasi lain tidak menggunakan kamera\n3. Izin akses kamera diberikan")
                 else:
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                     m1, m2, m3 = st.session_state.model1, st.session_state.model2, st.session_state.model3
                     ocr = st.session_state.ocr_engine
                     cnt, start = 0, time.time()
+                    frame_time = time.time()
                     
                     while run:
                         ok, frame = cap.read()
-                        if not ok: 
+                        if not ok:
+                            st.warning("⚠️ Gagal membaca frame. Reconnecting...")
                             cap.release()
-                            cap = cv2.VideoCapture(0)
-                            if not cap.isOpened():
-                                st.error("❌ Kamera terputus!")
+                            cap = open_webcam_safe()
+                            if cap is None:
+                                st.error("❌ Kamera terputus dan tidak bisa reconnect!")
                                 break
                             continue
-                        cnt += 1
-                        frame = cv2.resize(frame, (480, 360)) 
-                        # 3. Gunakan logika deteksi yang efisien
-                        # Pastikan conf_threshold diturunkan agar lebih sensitif
-                        frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold=0.25)
                         
-                        now = time.time()
+                        cnt += 1
+                        frame = cv2.resize(frame, (640, 480))
                         orig = frame.copy()
                         
+                        # Deteksi multi-model
                         frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
                         frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                         st.session_state.last_frame = orig
                         
                         # ============================================================
-                        # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
+                        # OCR - BACA TEKS
                         # ============================================================
                         if st.session_state.ocr_triggered_cam and ocr is not None:
                             if cnt % ocr_scan_interval == 0:
-                                with st.spinner("🔍 Reading..."):
-                                    text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
+                                text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                                 if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                    
-                                    # Normalisasi Teks untuk mencegah duplikat berulang
-                                    norm_text = re.sub(r'[^a-zA-Z0-9]', '', text).lower()
-                                    norm_last = re.sub(r'[^a-zA-Z0-9]', '', st.session_state.last_ocr_text).lower()
+                                    norm_text = normalize_ocr_text(text)
+                                    norm_last = normalize_ocr_text(st.session_state.last_ocr_text)
                                     
                                     if norm_text != norm_last:
                                         st.session_state.last_ocr_text = text
@@ -576,28 +597,27 @@ with tab1:
                                             if audio:
                                                 audio_ocr_ph.empty()
                                                 play_audio_safe(audio_ocr_ph, audio)
-                                                st.success(f"🔊 Suara diputar: {text[:30]}...")
-                                    else:
-                                        ocr_ph.markdown(f'<div class="ocr-result">📝 {text} <br><small>(Teks sama, tidak dibaca ulang)</small></div>', unsafe_allow_html=True)
                         
                         # ============================================================
                         # DETEKSI BAHAYA & RAMBU
                         # ============================================================
+                        now = time.time()
                         danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                         rambu = [d for d in dets if is_rambu(d['class'])]
                         
+                        # DANGER alert: tidak perlu cooldown untuk alert yang sama
                         if danger and enable_audio:
-                            d = danger[0]
-                            key = d['class']
-                            if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
+                            for d in danger:
+                                key = d['class']
+                                # Trigger danger langsung tanpa cooldown
                                 msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
                                 warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
                                 audio = get_audio_bytes(msg)
                                 if audio:
                                     audio_danger_ph.empty()
                                     play_audio_safe(audio_danger_ph, audio)
-                                st.session_state.last_alert_time[key] = now
                                 status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
+                                break  # Alert hanya untuk objek danger pertama
                         elif rambu and enable_audio:
                             d = rambu[0]
                             key = f"rambu_{d['class']}"
@@ -614,20 +634,19 @@ with tab1:
                             warn_ph.markdown('<div class="alert-success">✅ Aman</div>', unsafe_allow_html=True)
                             status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ok">● Safe</span></div>', unsafe_allow_html=True)
                         
+                        # Metrics
                         m_det.metric("Detections", len(dets))
                         m_danger.metric("⚠️ Danger", len(danger))
                         elapsed = time.time() - start
-                        m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed>0 else "0")
+                        m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed > 0 else "0")
+                        
                         if show_logs:
-                            log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts,msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                            log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts, msg in st.session_state.log[:10]]), unsafe_allow_html=True)
                         
-                        if btn_baca and not st.session_state.ocr_triggered_cam:
-                            st.session_state.ocr_triggered_cam = True
-                        
-                        time.sleep(0.01)
+                        # Minimal delay untuk smooth streaming
+                        time.sleep(0.005)
                     
                     cap.release()
-                    # Reset OCR text saat webcam mati
                     st.session_state.last_ocr_text = ''
                     st.session_state.ocr_triggered_cam = False
                     st.success("Webcam dihentikan.")
@@ -638,16 +657,13 @@ with tab1:
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
         
-        # ──────────────────────────────────────────────────────────
-        # RESET OCR TRIGGER SAAT UPLOAD VIDEO BARU
-        # ──────────────────────────────────────────────────────────
         if uploaded is not None:
             current_name = uploaded.name
             if st.session_state.last_uploaded_name != current_name:
                 st.session_state.ocr_triggered = False
                 st.session_state.ocr_frame_count = 0
                 st.session_state.last_uploaded_name = current_name
-                st.session_state.last_ocr_text = ''  # Reset teks terakhir
+                st.session_state.last_ocr_text = ''
                 ocr_ph.empty()
                 st.info("🔄 Video baru diupload. OCR di-reset. Klik 'Baca Teks' lagi jika ingin scan.")
         
@@ -658,7 +674,7 @@ with tab1:
         if btn_baca:
             st.session_state.ocr_triggered = True
             st.session_state.ocr_frame_count = 0
-            st.session_state.last_ocr_text = '' # Reset text agar terbaca jika di-klik manual
+            st.session_state.last_ocr_text = ''
             st.info("🔍 OCR akan membaca teks sepanjang video...")
         
         if uploaded and btn_start:
@@ -685,32 +701,27 @@ with tab1:
                     ok, frame = cap.read()
                     if not ok: break
                     cnt += 1
-                    frame = cv2.resize(frame, (480, 360)) 
-                    # 3. Gunakan logika deteksi yang efisien
-                    # Pastikan conf_threshold diturunkan agar lebih sensitif
+                    frame = cv2.resize(frame, (640, 480))
                     
                     now = cnt / fps
                     orig = frame.copy()
                     
-                    prog.progress(min(cnt/max(total,1), 1.0), text=f"Frame {cnt}/{total} ({now:.1f}s)")
+                    prog.progress(min(cnt/max(total, 1), 1.0), text=f"Frame {cnt}/{total} ({now:.1f}s)")
                     
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3)
+                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
                     
                     # ============================================================
-                    # OCR - BACA TEKS (HANYA JIKA TEKS BERBEDA)
+                    # OCR - BACA TEKS
                     # ============================================================
                     if st.session_state.ocr_triggered and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
-                            with st.spinner("🔍 Reading..."):
-                                text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
+                            text = perform_ocr_on_frame(orig, ocr, ocr_min_conf)
                             if text and text != "Tidak ada teks terdeteksi" and len(text) > 5:
-                                
-                                # Normalisasi Teks untuk mencegah duplikat
-                                norm_text = re.sub(r'[^a-zA-Z0-9]', '', text).lower()
-                                norm_last = re.sub(r'[^a-zA-Z0-9]', '', st.session_state.last_ocr_text).lower()
+                                norm_text = normalize_ocr_text(text)
+                                norm_last = normalize_ocr_text(st.session_state.last_ocr_text)
                                 
                                 if norm_text != norm_last:
                                     st.session_state.last_ocr_text = text
@@ -720,9 +731,6 @@ with tab1:
                                         if audio:
                                             audio_ocr_ph.empty()
                                             play_audio_safe(audio_ocr_ph, audio)
-                                            st.success(f"🔊 Suara diputar: {text[:30]}...")
-                                else:
-                                    ocr_ph.markdown(f'<div class="ocr-result">📝 {text} <br><small>(Teks sama, tidak dibaca ulang)</small></div>', unsafe_allow_html=True)
                     
                     # ============================================================
                     # DETEKSI BAHAYA & RAMBU
@@ -730,18 +738,17 @@ with tab1:
                     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
                     rambu = [d for d in dets if is_rambu(d['class'])]
                     
+                    # DANGER alert: tidak perlu cooldown
                     if danger and enable_audio:
-                        d = danger[0]
-                        key = d['class']
-                        if (now - st.session_state.last_alert_time[key]) >= alert_cooldown:
+                        for d in danger:
                             msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
                             warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
                             audio = get_audio_bytes(msg)
                             if audio:
                                 audio_danger_ph.empty()
                                 play_audio_safe(audio_danger_ph, audio)
-                            st.session_state.last_alert_time[key] = now
                             status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-danger">● DANGER</span></div>', unsafe_allow_html=True)
+                            break
                     elif rambu and enable_audio:
                         d = rambu[0]
                         key = f"rambu_{d['class']}"
@@ -761,18 +768,18 @@ with tab1:
                     m_det.metric("Detections", len(dets))
                     m_danger.metric("⚠️ Danger", len(danger))
                     elapsed = time.time() - start
-                    m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed>0 else "0")
-                    if show_logs:
-                        log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts,msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                    m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed > 0 else "0")
                     
-                    time.sleep(0.01)
+                    if show_logs:
+                        log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts, msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                    
+                    # Minimal delay untuk smooth streaming
+                    time.sleep(0.001)
                 
                 cap.release()
                 prog.empty()
                 st.success("✅ Selesai!")
                 st.metric("Total Frames", cnt)
-                
-                # Reset flag setelah selesai
                 st.session_state.ocr_triggered = False
                 
             finally:
@@ -794,21 +801,24 @@ with tab2:
                 st.error("⚠️ Load OCR dulu!")
             else:
                 try:
-                    cap = cv2.VideoCapture(0)
-                    ret, frame = cap.read()
-                    if ret:
-                        frame = cv2.resize(frame, (640,480))
-                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        img_ph.image(rgb, use_container_width=True)
-                        text = perform_ocr_on_frame(rgb, st.session_state.ocr_engine, ocr_min_conf)
-                        res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
-                        if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
-                            audio = get_audio_bytes(f"Ada tulisan: {text}")
-                            if audio:
-                                aud_ph.empty()
-                                play_audio_safe(aud_ph, audio)
-                                st.success("🔊 Audio playing...")
-                    cap.release()
+                    cap = open_webcam_safe()
+                    if cap is None:
+                        st.error("❌ Webcam tidak dapat diakses!")
+                    else:
+                        ret, frame = cap.read()
+                        cap.release()
+                        if ret:
+                            frame = cv2.resize(frame, (640, 480))
+                            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            img_ph.image(rgb, use_container_width=True)
+                            text = perform_ocr_on_frame(rgb, st.session_state.ocr_engine, ocr_min_conf)
+                            res_ph.markdown(f'<div class="ocr-result">{text}</div>', unsafe_allow_html=True)
+                            if text and text != "Tidak ada teks terdeteksi" and len(text) > 5 and enable_tts:
+                                audio = get_audio_bytes(f"Ada tulisan: {text}")
+                                if audio:
+                                    aud_ph.empty()
+                                    play_audio_safe(aud_ph, audio)
+                                    st.success("🔊 Audio playing...")
                 except Exception as e:
                     st.error(f"Error: {e}")
     else:
@@ -862,6 +872,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v4.0 (FINAL)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v4.1 (FIXED)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
