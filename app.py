@@ -734,19 +734,12 @@ with tab1:
             enable_ocr_live = st.checkbox("📖 Aktifkan Baca Teks (OCR) saat live",
                                           value=False)
 
-            # PENAMBAHAN STUN SERVERS GOOGLE AGAR KONEKSI LEBIH STABIL
             ctx = webrtc_streamer(
                 key="yolo-live",
                 mode=WebRtcMode.SENDRECV,
                 video_processor_factory=YOLOLiveProcessor,
                 rtc_configuration={
-                    "iceServers": [
-                        {"urls": ["stun:stun.l.google.com:19302"]},
-                        {"urls": ["stun:stun1.l.google.com:19302"]},
-                        {"urls": ["stun:stun2.l.google.com:19302"]},
-                        {"urls": ["stun:stun3.l.google.com:19302"]},
-                        {"urls": ["stun:stun4.l.google.com:19302"]}
-                    ]
+                    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
                 },
                 media_stream_constraints={"video": True, "audio": False},
                 async_processing=True,
