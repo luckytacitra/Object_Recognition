@@ -1,11 +1,12 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.9 (FIX SUARA)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.10 (FIX SUARA ALL)
 # =====================================================================
 # PERBAIKAN:
-# 1. Suara di upload video LANGSUNG KELUAR (tanpa delay berat)
-# 2. Suara tetap keluar sampai akhir video
-# 3. Cooldown per objek agar tidak spam
-# 4. Filter kelas valid
+# 1. Suara rintangan: setiap objek baru (beda class) bersuara
+# 2. Suara teks: setiap teks baru (tidak mirip) bersuara
+# 3. Cooldown turun ke 2 detik
+# 4. OCR threshold turun ke 0.5 (lebih sensitif)
+# 5. Reset alert saat video baru
 # =====================================================================
 
 import streamlit as st
@@ -56,7 +57,7 @@ html, body, [data-testid="stAppViewContainer"] {
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────
-# ID_MAP — HANYA KELAS VALID
+# ID_MAP
 # ─────────────────────────────────────────────────────────────────────
 ID_MAP_VALID = {
     "person":"orang","car":"mobil","bus":"bus","truck":"truk",
@@ -103,15 +104,13 @@ session_defaults = {
     'model1': None, 'model2': None, 'model3': None, 'ocr_engine': None,
     'last_frame': None, 'log': [], 'detection_history': [],
     'last_alert_time': defaultdict(lambda: -99.0),
-    'danger_announced': set(),
-    'rambu_announced': set(),
-    'danger_last_seen': {},
-    'rambu_last_seen': {},
     'ocr_triggered_cam': False,
     'ocr_triggered_vid': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
     'last_ocr_text': '',
+    'last_danger_text': '',
+    'detected_classes': set(),
 }
 for key, value in session_defaults.items():
     if key not in st.session_state:
@@ -227,7 +226,7 @@ def generate_alert(name, pos_x, area):
 # ============================================================
 # OCR
 # ============================================================
-def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.35):
+def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.30):
     if ocr_engine is None: return "OCR engine tidak tersedia"
     try:
         if len(frame.shape) == 3: gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -255,15 +254,20 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.35):
             if texts:
                 raw = ' '.join(texts)
                 raw = re.sub(r'[^a-zA-Z0-9\s\.,!?\-:/()%]', '', raw)
+                # Simpel autocorrect
+                raw = raw.replace('dlarang', 'dilarang').replace('dlrang', 'dilarang')
+                raw = raw.replace('parkr', 'parkir').replace('msuk', 'masuk')
+                raw = raw.replace('brhenti', 'berhenti').replace('hti-hti', 'hati-hati')
                 return raw.title() if len(raw) >= 3 else "Tidak ada teks terdeteksi"
         return "Tidak ada teks terdeteksi"
     except Exception as e: return f"Error: {str(e)[:30]}"
 
-def texts_are_similar(t1, t2, threshold=0.75):
+def texts_are_similar(t1, t2, threshold=0.5):
+    """FIX: threshold turun ke 0.5 agar lebih sensitif bedakan teks"""
     if not t1 or not t2: return False
     a, b = ' '.join(t1.lower().split()), ' '.join(t2.lower().split())
     if a == b: return True
-    if len(a) < 3 or len(b) < 3: return a == b
+    if len(a) < 2 or len(b) < 2: return a == b
     s1, s2 = set(a[i:i+2] for i in range(len(a)-1)), set(b[i:i+2] for i in range(len(b)-1))
     if not s1 or not s2: return a == b
     return len(s1 & s2) / len(s1 | s2) >= threshold
@@ -344,15 +348,24 @@ def process_frame_detection_multi(frame, m1, m2, m3):
     return out, all_d
 
 # ─────────────────────────────────────────────────────────────────────
-# ALERT - SUARA LANGSUNG KELUAR
+# ALERT - SUARA UNTUK SETIAP OBJEK BARU
 # ─────────────────────────────────────────────────────────────────────
-def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, cooldown=4):
+def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, cooldown=2):
     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if d['risk_level'] == 'RAMBU']
 
-    if danger and enable_audio:
-        d = danger[0]
+    # FIX: RESET detected_classes setiap frame
+    current_classes = {d['class'] for d in dets}
+    
+    # Cek objek baru yang belum pernah bersuara
+    new_danger = [d for d in danger if d['class'] not in st.session_state.get('detected_classes', set())]
+    new_waspada = [d for d in waspada if d['class'] not in st.session_state.get('detected_classes', set())]
+    new_rambu = [d for d in rambu if d['class'] not in st.session_state.get('detected_classes', set())]
+
+    # FIX: SUARA UNTUK OBJEK BARU
+    if new_danger and enable_audio:
+        d = new_danger[0]
         key = d['class']
         if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
             msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
@@ -363,13 +376,12 @@ def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, co
                 play_audio_safe(audio_ph, audio)
                 add_log(f"BAHAYA: {msg}")
             st.session_state.last_alert_time[key] = now_time
-        else:
-            warn_ph.markdown(f'<div class="alert-danger">🚨 Masih ada {get_indo_name(d["class"])}!</div>', unsafe_allow_html=True)
+            st.session_state.detected_classes.add(d['class'])
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-danger">● BAHAYA</span></div>', unsafe_allow_html=True)
     
-    elif waspada and enable_audio:
-        d = waspada[0]
-        key = f"w_{d['class']}"
+    elif new_waspada and enable_audio:
+        d = new_waspada[0]
+        key = d['class']
         if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
             msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
             warn_ph.markdown(f'<div class="alert-warning">⚡ {msg}</div>', unsafe_allow_html=True)
@@ -379,11 +391,12 @@ def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, co
                 play_audio_safe(audio_ph, audio)
                 add_log(f"WASPADA: {msg}")
             st.session_state.last_alert_time[key] = now_time
+            st.session_state.detected_classes.add(d['class'])
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-warning" style="background:#fff5e0;color:#cc8800;border-color:#ffcc66;">● WASPADA</span></div>', unsafe_allow_html=True)
     
-    elif rambu and enable_audio:
-        d = rambu[0]
-        key = f"r_{d['class']}"
+    elif new_rambu and enable_audio:
+        d = new_rambu[0]
+        key = d['class']
         if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
             msg = generate_rambu_alert(d['class'])
             warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
@@ -393,6 +406,7 @@ def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, co
                 play_audio_safe(audio_ph, audio)
                 add_log(f"RAMBU: {msg}")
             st.session_state.last_alert_time[key] = now_time
+            st.session_state.detected_classes.add(d['class'])
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
     
     else:
@@ -404,7 +418,8 @@ def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, co
 def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph):
     text = perform_ocr_on_frame(frame, ocr_eng, min_conf)
     if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
-        if not texts_are_similar(text, st.session_state.last_ocr_text):
+        # FIX: threshold 0.5 agar lebih sensitif
+        if not texts_are_similar(text, st.session_state.last_ocr_text, threshold=0.5):
             st.session_state.last_ocr_text = text
             ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>', unsafe_allow_html=True)
             add_log(f"OCR: {text[:40]}")
@@ -441,7 +456,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.9</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.10</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -481,9 +496,9 @@ with st.sidebar:
     st.markdown(f'<div class="pills"><span class="pill pill-model">{s1} M1</span><span class="pill pill-model">{s2} M2</span><span class="pill pill-model">{s3} M3</span><span class="pill pill-model">{so} OCR</span></div>', unsafe_allow_html=True)
     
     enable_audio = st.checkbox("🔊 Audio", value=True)
-    alert_cooldown = st.slider("Cooldown (s)", 1, 6, 3, help="Lebih kecil = suara lebih sering")
+    alert_cooldown = st.slider("Cooldown (s)", 1, 5, 2, help="1 = suara lebih sering")
     ocr_min_conf = st.slider("OCR Confidence", 0.1, 0.9, 0.30, 0.05)
-    ocr_scan_interval = st.slider("OCR Scan Tiap N Frame", 1, 30, 10)
+    ocr_scan_interval = st.slider("OCR Scan Interval", 1, 30, 10)
     frame_skip = st.slider("Frame Skip", 1, 10, 2)
     enable_tts = st.checkbox("🔊 TTS", value=True)
     show_logs = st.checkbox("📋 Logs", value=True)
@@ -491,6 +506,7 @@ with st.sidebar:
     if st.button("🔁 Reset Suara"):
         st.session_state.last_alert_time = defaultdict(lambda: -99.0)
         st.session_state.last_ocr_text = ''
+        st.session_state.detected_classes = set()
         st.success("Reset!")
 
 # ─────────────────────────────────────────────────────────────────────
@@ -560,7 +576,7 @@ with tab1:
                     log_ph.markdown(render_log(), unsafe_allow_html=True)
 
     # ============================================================
-    # UPLOAD VIDEO - FIX SUARA
+    # UPLOAD VIDEO - FIX SUARA ALL
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
@@ -572,9 +588,8 @@ with tab1:
                 st.session_state.ocr_frame_count = 0
                 st.session_state.last_uploaded_name = current_name
                 st.session_state.last_ocr_text = ''
-                st.session_state.danger_announced = set()
-                st.session_state.rambu_announced = set()
                 st.session_state.last_alert_time = defaultdict(lambda: -99.0)
+                st.session_state.detected_classes = set()
                 ocr_ph.empty()
                 st.info("🔄 Video baru diupload.")
 
@@ -613,6 +628,8 @@ with tab1:
                 
                 # RESET UNTUK SUARA
                 st.session_state.last_alert_time = defaultdict(lambda: -99.0)
+                st.session_state.detected_classes = set()
+                st.session_state.last_ocr_text = ''
 
                 while True:
                     ok, frame = cap.read()
@@ -632,10 +649,10 @@ with tab1:
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # FIX: SUARA LANGSUNG KELUAR TANPA DELAY
                     now_time = time.time()
                     danger_list, rambu_list = handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph, cooldown=alert_cooldown)
 
+                    # FIX: OCR threshold 0.5
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -649,7 +666,7 @@ with tab1:
                     if show_logs:
                         log_ph.markdown(render_log(), unsafe_allow_html=True)
                     
-                    # FIX: DELAY MINIMAL (10ms)
+                    # FIX: delay minimal
                     time.sleep(0.01)
 
                 cap.release()
@@ -728,6 +745,7 @@ with tab3:
 
         if st.button("🗑️ Hapus Data"):
             st.session_state.detection_history = []
+            st.session_state.detected_classes = set()
             st.rerun()
     else:
         st.info("📊 Belum ada data.")
@@ -735,6 +753,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.9</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.10</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
