@@ -1,13 +1,13 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v5.0
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v5.1
 # =====================================================================
-# PERBAIKAN v5.0:
-# 1. OCR: anti-typo + anti-mengeja (gabung huruf terpisah, autocorrect)
-# 2. Video: optimized (skip frames, resize kecil, no spinner)
-# 3. Lubang/tangga: M2 conf diturunkan khusus
-# 4. Video format: handle semua format + fallback
-# 5. Alert: sekali + instruksi
-# 6. Fuzzy OCR dedup lebih agresif
+# PERBAIKAN v5.1:
+# 1. Video: optimasi ekstrim (resize 320x240, skip frame lebih agresif)
+# 2. Deteksi lubang: M2 conf 0.15, area filter 0.005
+# 3. Hanya obstacle (lubang/tangga/rintangan) yang dianggap BAHAYA
+# 4. Orang/kendaraan = WASPADA (bukan BAHAYA)
+# 5. OCR: anti-typo + anti-mengeja + autocorrect total
+# 6. Alert: sekali per objek, tidak berulang
 # =====================================================================
 
 import streamlit as st
@@ -41,13 +41,14 @@ html, body, [data-testid="stAppViewContainer"] {
 .pill-run { background:#ede8ff;color:#6c3fff;border-color:#c4b0ff; }
 .pill-ok { background:#e6fff5;color:#00955a;border-color:#80ecc0; }
 .pill-danger { background:#fff0f0;color:#cc2222;border-color:#ffaaaa; }
+.pill-warn { background:#fffbe6;color:#ad6800;border-color:#ffe58f; }
 .pill-ocr { background:#e8f4ff;color:#0066cc;border-color:#90c8ff; }
 .pill-model { background:#f0e8ff;color:#6c3fff;border-color:#c4b0ff; }
 .alert-danger { background:#fff0f0;border:1px solid #ffaaaa;border-left:4px solid #ff4444;border-radius:8px;padding:1rem;color:#cc2222;font-weight:600;margin:.8rem 0; }
 .alert-warning { background:#fffbe6;border:1px solid #ffe58f;border-left:4px solid #faad14;border-radius:8px;padding:1rem;color:#ad6800;font-weight:600;margin:.8rem 0; }
 .alert-info { background:#f0f6ff;border:1px solid #90c8ff;border-left:4px solid #3f8bff;border-radius:8px;padding:1rem;color:#0066cc;margin:.8rem 0; }
 .alert-success { background:#f0fff8;border:1px solid #80ecc0;border-left:4px solid #00c073;border-radius:8px;padding:1rem;color:#00955a;margin:.8rem 0; }
-.ocr-result { background:#f8fbff;border:2px solid #3f8bff;border-radius:10px;padding:1.4rem;color:#0066cc;font-size:1.05rem;min-height:60px; }
+.ocr-result { background:#f8fbff;border:2px solid #3f8bff;border-radius:10px;padding:1.4rem;color:#0066cc;font-size:1.05rem;min-height:60px;white-space:pre-wrap; }
 .stat-box { background:linear-gradient(135deg,#f5f7ff,#faf8ff);border-radius:10px;padding:1.2rem;text-align:center;border:1px solid #e0e4f0; }
 .stat-value { font-size:2rem;font-weight:700;color:#6c3fff; }
 .stat-label { font-size:.8rem;color:#999;text-transform:uppercase;letter-spacing:1px;font-weight:600; }
@@ -93,8 +94,8 @@ def get_audio_bytes(text, lang='id'):
 INDO_NAMES = {
     'person':'orang','car':'mobil','bus':'bus','truck':'truk',
     'motorcycle':'motor','bicycle':'sepeda','dog':'anjing','cat':'kucing',
-    'pothole':'lubang jalan','stairs':'tangga','obstacle':'rintangan',
-    'road-barrier':'pembatas jalan','pole':'tiang','train':'kereta api',
+    'pothole':'lubang','stairs':'tangga','obstacle':'rintangan',
+    'road-barrier':'pembatas jalan','pole':'tiang','train':'kereta',
     'stop sign':'rambu stop','traffic light':'lampu lalu lintas',
     'sidewalk':'trotoar','crosswalk':'zebra cross','tree':'pohon',
     'dilarang masuk':'dilarang masuk','dilarang parkir':'dilarang parkir',
@@ -133,161 +134,114 @@ def generate_alert(name, pos_x, area):
     nama = get_indo_name(name)
     if pos_x < 0.3: pos,arah = "di kiri","Geser ke kanan"
     elif pos_x > 0.7: pos,arah = "di kanan","Geser ke kiri"
-    else: pos,arah = "di depan","Berhenti, belok ke samping"
+    else: pos,arah = "di depan","Berhenti"
     if area > 0.15: return f"Awas! {nama} sangat dekat {pos}! {arah} sekarang!"
     elif area > 0.06: return f"Hati-hati, ada {nama} {pos}. {arah}."
     else: return f"Ada {nama} {pos}. {arah} pelan-pelan."
 
 # ============================================================
-# OCR — ANTI TYPO + ANTI MENGEJA
+# OCR — ANTI TYPO + ANTI MENGEJA (FULL)
 # ============================================================
-# Kamus kata umum Indonesia untuk autocorrect
 COMMON_WORDS = {
     'jln':'jalan','jl':'jalan','jalan':'jalan',
     'dlarang':'dilarang','dlrang':'dilarang','dilarag':'dilarang',
-    'dilarng':'dilarang','dilrang':'dilarang',
-    'parkr':'parkir','parkr':'parkir','prkir':'parkir','pakir':'parkir',
-    'masuk':'masuk','msuk':'masuk','mausk':'masuk',
-    'brhenti':'berhenti','brheti':'berhenti','berheti':'berhenti',
+    'dilarng':'dilarang','dilrang':'dilarang','dilarangg':'dilarang',
+    'parkr':'parkir','prkir':'parkir','pakir':'parkir','parkirr':'parkir',
+    'masuk':'masuk','msuk':'masuk','mausk':'masuk','mauk':'masuk',
+    'brhenti':'berhenti','brheti':'berhenti','berheti':'berhenti','berhentii':'berhenti',
     'hti-hti':'hati-hati','hati-hti':'hati-hati','hti-hati':'hati-hati',
-    'rmah':'rumah','rumh':'rumah','sakit':'sakit','sakt':'sakit',
-    'msjid':'masjid','masjd':'masjid',
-    'grja':'gereja','greja':'gereja',
-    'skolah':'sekolah','skolah':'sekolah','sekolh':'sekolah',
-    'toko':'toko','warung':'warung','pasar':'pasar',
-    'awas':'awas','bahaya':'bahaya','bhaya':'bahaya',
-    'kluar':'keluar','masuk':'masuk','kluaar':'keluar',
-    'blok':'belok','belk':'belok','knan':'kanan','kri':'kiri',
-    'dpan':'depan','belkang':'belakang',
-    'stp':'stop','stopp':'stop',
-    'lmpu':'lampu','lampo':'lampu',
+    'rmah':'rumah','rumh':'rumah','rumahh':'rumah','sakit':'sakit','sakt':'sakit',
+    'msjid':'masjid','masjd':'masjid','masjidh':'masjid',
+    'grja':'gereja','greja':'gereja','gerja':'gereja',
+    'awas':'awas','bahaya':'bahaya','bhaya':'bahaya','bhy':'bahaya',
+    'kluar':'keluar','kluaar':'keluar','blok':'belok','belk':'belok',
+    'knan':'kanan','kri':'kiri','dpan':'depan','belkang':'belakang',
+    'stp':'stop','stopp':'stop','stop':'stop',
+    'lmpu':'lampu','lampo':'lampu','lampuu':'lampu',
     'mrah':'merah','hjau':'hijau','kunng':'kuning',
-    'pnyebrangan':'penyeberangan','penyebrangn':'penyeberangan',
+    'pnyebrangan':'penyeberangan','penyebrangn':'penyeberangan','penyeberangn':'penyeberangan',
     'zebr':'zebra','crss':'cross',
-    'km':'km','mtr':'meter','m':'m',
-    'kec':'kecepatan','maks':'maksimal','min':'minimal',
+    'kec':'kecepatan','kecepata':'kecepatan','maks':'maksimal','min':'minimal',
     'spbu':'SPBU','spb':'SPBU',
+    'rintangn':'rintangan','rintanga':'rintangan','obstacle':'rintangan',
+    'lubang':'lubang','luba':'lubang','lubangg':'lubang',
+    'tangga':'tangga','tanggaa':'tangga','tanga':'tangga',
 }
+# Kata yang tidak perlu (noise)
+NOISE_WORDS = {'a','i','u','e','o','yang','dan','di','ke','dari','untuk','dengan',
+               'pada','atau','itu','ini','yang','akan','telah','sudah','bisa','dapat'}
 
 def autocorrect_word(word):
-    """Koreksi kata berdasarkan kamus + similarity"""
     if len(word) <= 1: return word
     low = word.lower()
-    if low in COMMON_WORDS:
-        return COMMON_WORDS[low]
-    # Cek similarity dengan kamus
-    best_match = None
-    best_sim = 0
+    # Hapus huruf berulang (contoh: "lubangg" -> "lubang")
+    clean = re.sub(r'(.)\1{2,}', r'\1', low)
+    if clean in COMMON_WORDS: return COMMON_WORDS[clean]
+    # Cek similarity
+    best = None; best_sim = 0
     for k,v in COMMON_WORDS.items():
-        if abs(len(k) - len(low)) > 2: continue
-        # Simple char overlap
-        common = sum(1 for c in low if c in k)
-        sim = common / max(len(k), len(low))
-        if sim > 0.75 and sim > best_sim:
-            best_sim = sim
-            best_match = v
-    if best_match:
-        return best_match
-    return word
+        if abs(len(k)-len(clean)) > 3: continue
+        common = sum(1 for c in clean if c in k)
+        sim = common / max(len(k), len(clean))
+        if sim > 0.7 and sim > best_sim:
+            best_sim = sim; best = v
+    return best if best else word
 
 def fix_spelled_text(text):
-    """
-    Perbaiki teks yang 'mengeja' — huruf-huruf terpisah digabung.
-    Contoh: "D I L A R A N G" → "DILARANG"
-    Contoh: "S T O P" → "STOP"
-    """
     if not text: return text
-    
-    # Pattern: huruf tunggal dipisah spasi berulang (min 3 huruf)
-    # Match: "D I L A R A N G" atau "S T O P"
-    spelled_pattern = r'\b([A-Za-z])\s+(?=[A-Za-z]\b)'
-    
-    # Cek apakah ada pattern mengeja
+    # Gabung huruf terpisah: "D I L A R A N G" -> "DILARANG"
     words = text.split()
-    result_words = []
-    i = 0
+    result = []; i=0
     while i < len(words):
-        # Cek apakah ini sequence huruf tunggal (>= 3 berturut-turut)
         if len(words[i]) == 1 and words[i].isalpha():
-            # Kumpulkan semua huruf tunggal berturut-turut
-            single_chars = [words[i]]
-            j = i + 1
+            chars = [words[i]]; j=i+1
             while j < len(words) and len(words[j]) == 1 and words[j].isalpha():
-                single_chars.append(words[j])
-                j += 1
-            
-            if len(single_chars) >= 3:
-                # Gabung jadi satu kata
-                merged = ''.join(single_chars)
-                result_words.append(merged)
+                chars.append(words[j]); j+=1
+            if len(chars) >= 3:
+                result.append(''.join(chars))
             else:
-                # Terlalu pendek, keep as is
-                result_words.extend(single_chars)
+                result.extend(chars)
             i = j
         else:
-            result_words.append(words[i])
-            i += 1
-    
-    return ' '.join(result_words)
+            result.append(words[i]); i += 1
+    return ' '.join(result)
 
 def clean_ocr_text(raw_text):
-    """
-    Pipeline lengkap untuk membersihkan OCR output:
-    1. Fix mengeja (huruf terpisah)
-    2. Autocorrect kata-kata umum
-    3. Hapus karakter aneh
-    4. Gabung kata pendek yang mungkin terpisah
-    """
-    if not raw_text or raw_text == "Tidak ada teks terdeteksi":
-        return raw_text
-    
-    # Step 1: Fix huruf terpisah (mengeja)
+    if not raw_text: return "Tidak ada teks terdeteksi"
+    # Step 1: Fix mengeja
     text = fix_spelled_text(raw_text)
-    
-    # Step 2: Clean karakter aneh tapi keep yang penting
+    # Step 2: Clean
     text = re.sub(r'[^a-zA-Z0-9\s\.,!?\-:/()%]', '', text)
-    
-    # Step 3: Autocorrect per kata
+    # Step 3: Autocorrect
     words = text.split()
     corrected = []
     for w in words:
-        if len(w) <= 1 and not w.isdigit():
-            continue  # Skip huruf tunggal sisa
+        if len(w) <= 1: continue
+        if w.lower() in NOISE_WORDS: continue
         corrected.append(autocorrect_word(w))
-    
+    if not corrected: return "Tidak ada teks terdeteksi"
     text = ' '.join(corrected)
-    
-    # Step 4: Clean up spasi berlebih
     text = ' '.join(text.split())
-    
-    # Step 5: Filter hasil terlalu pendek
-    if len(text) < 3:
-        return "Tidak ada teks terdeteksi"
-    
+    if len(text) < 3: return "Tidak ada teks terdeteksi"
     return text
 
-def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
-    """OCR dengan preprocessing + anti-typo pipeline"""
-    if ocr_engine is None: return "OCR engine tidak tersedia"
+def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.15):
+    if ocr_engine is None: return "OCR tidak tersedia"
     try:
         if len(frame.shape) == 3:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = frame
-        h, w = gray.shape
-        # Upscale kecil agar OCR lebih akurat
-        if w < 500:
-            scale = 640 / w
-            gray = cv2.resize(gray, (640, int(h * scale)), interpolation=cv2.INTER_CUBIC)
-        
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        else: gray = frame
+        h,w = gray.shape
+        if w < 400:
+            scale = 640/w
+            gray = cv2.resize(gray, (640, int(h*scale)), interpolation=cv2.INTER_CUBIC)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
         enhanced = clahe.apply(gray)
         kernel = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
-        sharpened = cv2.filter2D(enhanced, -1, kernel)
-
-        # Try multiple preprocessing
+        sharp = cv2.filter2D(enhanced, -1, kernel)
+        # Try multiple
         all_texts = []
-        for img in [sharpened, enhanced, frame]:
+        for img in [sharp, enhanced, frame]:
             try:
                 results = ocr_engine.readtext(img, detail=1, paragraph=False)
                 if results:
@@ -296,35 +250,24 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.20):
                         if len(text) > 0 and conf > min_conf:
                             all_texts.append((text, conf))
             except: continue
-            # Jika sudah dapat hasil bagus, stop
-            if any(c > 0.5 for _,c in all_texts):
-                break
-
+            if any(c > 0.4 for _,c in all_texts): break
         if all_texts:
-            # Sort by confidence, ambil unik
             all_texts.sort(key=lambda x: x[1], reverse=True)
-            seen = set()
-            unique = []
+            seen=set(); unique=[]
             for text, conf in all_texts:
                 norm = text.lower().strip()
-                if norm not in seen and len(text.strip()) > 0:
-                    seen.add(norm)
-                    unique.append(text)
-
-            raw_result = ' '.join(unique)
-            # APPLY CLEANING PIPELINE
-            cleaned = clean_ocr_text(raw_result)
+                if norm not in seen and len(text.strip())>0:
+                    seen.add(norm); unique.append(text)
+            raw = ' '.join(unique)
+            cleaned = clean_ocr_text(raw)
             return cleaned
-
         return "Tidak ada teks terdeteksi"
     except Exception as e:
         return f"Error: {str(e)[:30]}"
 
-def texts_are_similar(t1, t2, threshold=0.65):
-    """Fuzzy match — lebih agresif (threshold 0.65)"""
+def texts_are_similar(t1, t2, threshold=0.6):
     if not t1 or not t2: return False
-    a = ' '.join(t1.lower().split())
-    b = ' '.join(t2.lower().split())
+    a,b = ' '.join(t1.lower().split()), ' '.join(t2.lower().split())
     if a == b: return True
     if len(a) < 3 or len(b) < 3: return a == b
     def bg(s): return set(s[i:i+2] for i in range(len(s)-1))
@@ -333,7 +276,7 @@ def texts_are_similar(t1, t2, threshold=0.65):
     return len(s1 & s2) / len(s1 | s2) >= threshold
 
 # ============================================================
-# DETEKSI — BALANCED THRESHOLD
+# DETEKSI — HANYA OBSTACLE YANG BAHAYA
 # ============================================================
 OBSTACLE_KW = ['pothole','lubang','hole','stairs','tangga','step','obstacle',
                'rintangan','road-barrier','pembatas','pole','tiang','pillar',
@@ -349,12 +292,10 @@ def classify_object(cls_lower):
     return 'other'
 
 def process_frame_detection(frame, model, conf=0.4, is_m2=False):
-    """
-    is_m2=True: model obstacle → conf diturunkan 10%, area filter lebih kecil
-    """
     if model is None: return frame, []
     try:
-        effective_conf = max(conf - 0.10, 0.15) if is_m2 else conf
+        # M2: conf lebih rendah
+        effective_conf = max(conf - 0.15, 0.12) if is_m2 else conf
         results = model.predict(frame, conf=effective_conf, iou=0.45, verbose=False)
         detections = []
         if results and len(results) > 0:
@@ -371,41 +312,43 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                     ar = area/(fw*fh)
                     px = ((x1+x2)/2)/fw
                     cat = classify_object(cn.lower())
-
-                    # Filter: area terlalu kecil = noise
+                    # Filter area
                     if cat == 'obstacle':
-                        if ar < 0.008: continue  # Obstacle kecil OK
-                        min_conf_show = 0.25 if is_m2 else 0.35
+                        if ar < 0.005: continue
+                        min_conf_show = 0.20 if is_m2 else 0.30
                         if cs < min_conf_show: continue
                     elif cat == 'vehicle':
-                        if ar < 0.02 or cs < 0.45: continue
+                        if ar < 0.02 or cs < 0.40: continue
                     elif cat == 'person':
-                        if ar < 0.015 or cs < 0.40: continue
+                        if ar < 0.015 or cs < 0.35: continue
                     else:
                         if ar < 0.015: continue
-
-                    # Risk level
+                    # RISK: HANYA OBSTACLE YANG BAHAYA
                     if cat == 'obstacle':
-                        if cs > 0.45 and ar > 0.05: rl = 'BAHAYA'
-                        elif cs > 0.30 and ar > 0.02: rl = 'WASPADA'
-                        else: rl = 'AMAN'
+                        if cs > 0.40 and ar > 0.04:
+                            risk_level = 'BAHAYA'
+                        elif cs > 0.25 and ar > 0.015:
+                            risk_level = 'WASPADA'
+                        else:
+                            risk_level = 'AMAN'
                     elif cat == 'vehicle':
-                        if cs > 0.55 and ar > 0.12: rl = 'BAHAYA'
-                        elif cs > 0.45 and ar > 0.06: rl = 'WASPADA'
-                        else: rl = 'AMAN'
+                        if cs > 0.50 and ar > 0.10:
+                            risk_level = 'WASPADA'
+                        else:
+                            risk_level = 'AMAN'
                     elif cat == 'person':
-                        if cs > 0.50 and ar > 0.08: rl = 'WASPADA'
-                        else: rl = 'AMAN'
+                        if cs > 0.45 and ar > 0.06:
+                            risk_level = 'WASPADA'
+                        else:
+                            risk_level = 'AMAN'
                     else:
-                        rl = 'AMAN'
-
+                        risk_level = 'AMAN'
                     detections.append({
                         'class':cn,'confidence':float(cs),'area_ratio':ar,
-                        'position_x':px,'risk_level':rl,'bbox':(x1,y1,x2,y2),
+                        'position_x':px,'risk_level':risk_level,'bbox':(x1,y1,x2,y2),
                         'timestamp':datetime.now()
                     })
-
-                    color = (0,0,255) if rl=='BAHAYA' else (0,165,255) if rl=='WASPADA' else (0,255,0)
+                    color = (0,0,255) if risk_level=='BAHAYA' else (0,165,255) if risk_level=='WASPADA' else (0,255,0)
                     cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
                     lbl = f"{get_indo_name(cn)} {cs:.0%}"
                     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -420,15 +363,12 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
 def process_frame_detection_multi(frame, m1, m2, m3, conf=0.4):
     out = frame.copy()
     all_d = []
-    # M1: general
     if m1:
         out, d = process_frame_detection(out, m1, conf, is_m2=False)
         all_d.extend(d)
-    # M2: obstacle — special treatment
     if m2:
         out, d = process_frame_detection(out, m2, conf, is_m2=True)
         all_d.extend(d)
-    # M3: rambu
     if m3:
         out, d = process_frame_detection(out, m3, conf, is_m2=False)
         all_d.extend(d)
@@ -436,12 +376,12 @@ def process_frame_detection_multi(frame, m1, m2, m3, conf=0.4):
 
 # ─── ALERT ───
 def handle_alerts(dets, now_t, en_audio, cooldown, warn_ph, status_ph, ad_ph, ar_ph):
-    danger = [d for d in dets if d['risk_level']=='BAHAYA']
-    waspada = [d for d in dets if d['risk_level']=='WASPADA']
+    danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
+    waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if is_rambu(d['class'])]
     
     current = {d['class'] for d in dets}
-    st.session_state.alerted_objects -= (st.session_state.alerted_objects - current)
+    st.session_state.alerted_objects &= current
 
     if danger and en_audio:
         d = danger[0]
@@ -465,7 +405,7 @@ def handle_alerts(dets, now_t, en_audio, cooldown, warn_ph, status_ph, ad_ph, ar
             a = get_audio_bytes(msg)
             if a: ad_ph.empty(); play_audio_safe(ad_ph, a)
             st.session_state.last_alert_time[k] = now_t
-        status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-danger" style="background:#fffbe6;color:#ad6800;border-color:#ffe58f;">● WASPADA</span></div>',unsafe_allow_html=True)
+        status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-warn">● WASPADA</span></div>',unsafe_allow_html=True)
     elif rambu and en_audio:
         d = rambu[0]
         k = f"r_{d['class']}"
@@ -517,7 +457,7 @@ def load_ocr():
 # ─── HEADER ───
 c1,c2 = st.columns([0.1,0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>',unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek + Baca Teks — v5.0</p></div>',unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek + Baca Teks — v5.1</p></div>',unsafe_allow_html=True)
 st.divider()
 
 # ─── SIDEBAR ───
@@ -553,8 +493,7 @@ with st.sidebar:
     ocr_interval = st.slider("OCR Interval",1,10,5)
     enable_tts = st.checkbox("🔊 TTS",value=True)
     show_logs = st.checkbox("📋 Logs",value=True)
-    # Frame skip untuk performa video
-    frame_skip = st.slider("Frame Skip (video)",1,10,3,help="Skip N frame. Lebih tinggi = lebih lancar tapi kurang detail")
+    frame_skip = st.slider("Frame Skip",1,10,3,help="Skip N frame. Lebih tinggi = lebih lancar")
 
 # ─── TABS ───
 tab1, tab2, tab3 = st.tabs(["🎯 Detection","📖 Text Reading","📊 Statistics"])
@@ -564,7 +503,7 @@ with tab1:
     st.divider()
 
     if mode == "📹 Webcam":
-        st.markdown('<div class="alert-info">📸 Ambil foto → otomatis dianalisis. Klik "Clear photo" untuk scan baru.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="alert-info">📸 Ambil foto → otomatis dianalisis.</div>',unsafe_allow_html=True)
         ocr_on = st.checkbox("📖 Baca Teks (OCR)",value=False)
         frame_ph=st.empty(); status_ph=st.empty(); warn_ph=st.empty(); ocr_ph=st.empty()
         ad_ph=st.empty(); ar_ph=st.empty(); aocr_ph=st.empty()
@@ -621,7 +560,6 @@ with tab1:
                 st.error("⚠️ Load YOLO!"); st.stop()
             st.session_state.alerted_objects.clear()
             
-            # Simpan video ke temp file
             suffix = os.path.splitext(uploaded.name)[1] or '.mp4'
             with tempfile.NamedTemporaryFile(delete=False,suffix=suffix) as tmp:
                 tmp.write(uploaded.read()); vid_path=tmp.name
@@ -629,7 +567,7 @@ with tab1:
             try:
                 cap = cv2.VideoCapture(vid_path)
                 if not cap.isOpened():
-                    st.error("❌ Video tidak bisa dibuka! Coba format lain (MP4 H.264).")
+                    st.error("❌ Video tidak bisa dibuka! Coba format MP4 H.264.")
                     st.stop()
                 
                 total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -643,11 +581,10 @@ with tab1:
                     ok,frame=cap.read()
                     if not ok: break
                     cnt+=1
-                    # Frame skip — kunci agar video tidak macet
                     if cnt % frame_skip != 0: continue
                     
-                    # Resize lebih kecil untuk performa
-                    frame=cv2.resize(frame,(480,360))
+                    # RESIZE KECIL AGAR CEPAT
+                    frame=cv2.resize(frame,(320,240))
                     orig=frame.copy()
                     now_sec=cnt/fps_v
                     prog.progress(min(cnt/max(total,1),1.0),text=f"{cnt}/{total} ({now_sec:.1f}s)")
@@ -730,4 +667,4 @@ with tab3:
         st.info("📊 Belum ada data.")
 
 st.divider()
-st.markdown('<div style="text-align:center;color:#999;font-size:.8rem;padding:1rem 0"><strong>Asisten Navigasi Tunanetra v5.0</strong> • YOLOv11 • EasyOCR • gTTS</div>',unsafe_allow_html=True)
+st.markdown('<div style="text-align:center;color:#999;font-size:.8rem;padding:1rem 0"><strong>Asisten Navigasi Tunanetra v5.1</strong> • YOLOv11 • EasyOCR • gTTS</div>',unsafe_allow_html=True)
