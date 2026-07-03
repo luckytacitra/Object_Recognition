@@ -1,6 +1,7 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA v6.2 — GABUNGAN v5.12 + COLAB
-# FIX: M3 (Rambu) dibuat super sensitif untuk jarak jauh
+# ASISTEN NAVIGASI TUNANETRA v6.3 — FINAL LENGKAP & STABIL
+# FIX: Suara berkelanjutan untuk teks/rintangan berikutnya, 
+#      Sinkronisasi waktu video, & Pengurangan Salah Deteksi
 # =====================================================================
 
 import streamlit as st
@@ -11,7 +12,8 @@ from gtts import gTTS
 from datetime import datetime
 from io import BytesIO
 from collections import defaultdict
-import logging, random
+import logging
+import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,15 +61,12 @@ session_defaults = {
     'model1': None, 'model2': None, 'model3': None, 'ocr_engine': None,
     'last_frame': None, 'log': [], 'detection_history': [],
     'last_alert_time': defaultdict(lambda: -99.0),
-    'danger_last_seen': {},      
-    'danger_announced': set(),   
-    'rambu_last_seen': {},
-    'rambu_announced': set(),
     'ocr_triggered_cam': False,
     'ocr_triggered_vid': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
     'last_ocr_text': '',
+    'last_ocr_time': 0.0, # Memori untuk reset teks
 }
 for key, value in session_defaults.items():
     if key not in st.session_state:
@@ -76,15 +75,6 @@ for key, value in session_defaults.items():
 def add_log(msg):
     st.session_state.log.insert(0, (time.strftime("%H:%M:%S"), msg))
     st.session_state.log = st.session_state.log[:30]
-
-def render_log():
-    if not st.session_state.log:
-        return '<div style="color:#ccc;text-align:center;padding:1rem">Belum ada aktivitas</div>'
-    rows=[]
-    for item in st.session_state.log[:10]:
-        if isinstance(item,(tuple,list)) and len(item)>=2:
-            rows.append(f'[{item[0]}] {item[1]}')
-    return '<br>'.join(rows) if rows else 'Belum ada'
 
 # ─────────────────────────────────────────────────────────────────────
 # FUNGSI AUDIO STABIL
@@ -301,7 +291,7 @@ def texts_are_similar(t1, t2, threshold=0.75):
     return len(s1 & s2) / len(s1 | s2) >= threshold
 
 # ─────────────────────────────────────────────────────────────────────
-# DETEKSI YOLO - LUBANG & RAMBU LEBIH SENSITIF
+# DETEKSI YOLO - LUBANG & ORANG (TIDAK SALAH DETEKSI)
 # ─────────────────────────────────────────────────────────────────────
 OBSTACLE_KW = ['pothole', 'lubang', 'hole', 'stairs', 'stair', 'step', 'tangga', 'obstacle', 'rintangan', 'road-barrier', 'barrier', 'pembatas', 'pole', 'tiang']
 VEHICLE_KW = ['car', 'mobil', 'bus', 'truck', 'truk', 'vehicle', 'kendaraan', 'motorcycle', 'motor', 'bicycle', 'sepeda', 'train', 'kereta']
@@ -310,9 +300,9 @@ PERSON_KW = ['person', 'orang']
 def process_frame_detection(frame, model, conf=0.4, source='m1'):
     if model is None: return frame, []
     try:
-        # PERBAIKAN: M2 (Lubang) dan M3 (Rambu) diturunkan batas conf agar objek jauh kedetek
-        if source == 'm2': effective_conf = 0.10
-        elif source == 'm3': effective_conf = 0.15
+        # PENGATURAN CONFIDENCE PROPORSIONAL
+        if source == 'm2': effective_conf = max(conf - 0.15, 0.10) # Lebih sensitif untuk lubang/tangga
+        elif source == 'm3': effective_conf = max(conf - 0.10, 0.20) # Lebih sensitif untuk rambu
         else: effective_conf = conf
 
         results = model.predict(frame, conf=effective_conf, iou=0.45, verbose=False)
@@ -338,13 +328,13 @@ def process_frame_detection(frame, model, conf=0.4, source='m1'):
                     area = (x2 - x1) * (y2 - y1)
                     area_ratio = area / (fw * fh)
 
-                    # PERBAIKAN: Rambu dan lubang diperbolehkan berukuran sangat kecil
-                    min_area = 0.002 if source in ['m2', 'm3'] else 0.010
+                    # AREA FILTER
+                    min_area = 0.002 if source in ['m2', 'm3'] else 0.015
                     if area_ratio < min_area: continue
 
                     pos_x = ((x1 + x2) / 2) / fw
 
-                    # PERBAIKAN LOGIKA BAHAYA
+                    # LOGIKA BAHAYA YANG BENAR
                     if is_obstacle:
                         if area_ratio > 0.04: risk_level = 'BAHAYA'
                         elif area_ratio > 0.01: risk_level = 'WASPADA'
@@ -354,7 +344,7 @@ def process_frame_detection(frame, model, conf=0.4, source='m1'):
                         elif conf_score > 0.35 and area_ratio > 0.05: risk_level = 'WASPADA'
                         else: risk_level = 'AMAN'
                     elif is_person:
-                        # ORANG TIDAK PERNAH BAHAYA, HANYA WASPADA
+                        # PENTING: ORANG TIDAK PERNAH "BAHAYA"
                         if conf_score > 0.40 and area_ratio > 0.10: risk_level = 'WASPADA'
                         else: risk_level = 'AMAN'
                     elif source == 'm3':
@@ -397,10 +387,8 @@ def process_frame_detection_multi(frame, m1, m2, m3, conf=0.4):
     return out, all_d
 
 # ─────────────────────────────────────────────────────────────────────
-# PENANGANAN ALERT SEKALI & DEDUP OCR
+# PENANGANAN ALERT SEKALI & DEDUP OCR (BASED ON REAL TIMING)
 # ─────────────────────────────────────────────────────────────────────
-REAPPEAR_WINDOW = 15.0  
-
 def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, cooldown=3):
     danger = sorted([d for d in dets if d['risk_level'] == 'BAHAYA'], key=lambda x:x['area_ratio'], reverse=True)
     waspada = sorted([d for d in dets if d['risk_level'] == 'WASPADA'], key=lambda x:x['area_ratio'], reverse=True)
@@ -409,6 +397,7 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     if danger:
         d = danger[0]
         cls_key = f"danger_{d['class']}"
+        # Jika waktu sekarang - waktu bunyi terakhir sudah lebih besar dari cooldown (suara akan diulang terus selama objek ada)
         if (now_time - st.session_state.last_alert_time[cls_key]) > cooldown:
             msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
             warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
@@ -451,10 +440,18 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
 
     return danger, rambu
 
-def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph):
+def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph, now_time):
     text = perform_ocr_on_frame(frame, ocr_eng, min_conf)
+    
+    # RESET MEMORI TEKS: Jika teks lama tidak terlihat selama 5 detik, kosongkan memori. 
+    # Ini memastikan "next text" akan dibunyikan lagi dengan benar.
+    if (now_time - st.session_state.last_ocr_time) > 5.0:
+        st.session_state.last_ocr_text = ''
+        
     if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
-        # PENCEGAHAN BACA BERULANG
+        st.session_state.last_ocr_time = now_time # Update waktu terakhir liat teks
+        
+        # PENCEGAHAN SUARA BERULANG DALAM WAKTU SINGKAT
         if not texts_are_similar(text, st.session_state.last_ocr_text):
             st.session_state.last_ocr_text = text
             ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>', unsafe_allow_html=True)
@@ -532,7 +529,7 @@ with st.sidebar:
     so = "✅" if st.session_state.ocr_engine else "⚠️"
     st.markdown(f'<div class="pills"><span class="pill pill-model">{s1} M1</span><span class="pill pill-model">{s2} M2</span><span class="pill pill-model">{s3} M3</span><span class="pill pill-model">{so} OCR</span></div>', unsafe_allow_html=True)
     
-    conf_threshold = st.slider("Confidence Deteksi Base", 0.1, 0.9, 0.35, 0.05, help="M2 (lubang) dan M3 (rambu) diturunkan otomatis jadi lebih sensitif")
+    conf_threshold = st.slider("Confidence Deteksi Base", 0.1, 0.9, 0.35, 0.05, help="Atur tinggi agar salah deteksi berkurang")
     enable_audio = st.checkbox("🔊 Audio Alert", value=True)
     alert_cooldown = st.slider("Waktu Ulang Suara (s)", 2, 10, 3)
     ocr_min_conf = st.slider("OCR Confidence", 0.1, 0.9, 0.30, 0.05)
@@ -573,7 +570,7 @@ with tab1:
     # MODE WEBCAM LOKAL (cv2)
     # ============================================================
     if mode == "📹 Webcam LOKAL (Lancar)":
-        st.info("💡 Mode ini menggunakan kamera bawaan laptop secara langsung. Jauh lebih cepat dan stabil.")
+        st.info("💡 Mode ini menggunakan kamera bawaan laptop secara langsung tanpa lag.")
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1: run_cam = st.toggle("🔴 AKTIFKAN KAMERA LIVE")
@@ -619,10 +616,10 @@ with tab1:
                 # Alert Pintar
                 danger_list, rambu_list = handle_alerts_once(dets, now_t, enable_audio, warn_ph, status_ph, audio_alert_ph, alert_cooldown)
                 
-                # OCR (Anti ngulang)
+                # OCR Terintegrasi (Bisa mengulang suara kalau teks baru masuk)
                 if st.session_state.ocr_triggered_cam and ocr_eng is not None:
                     if cnt % ocr_scan_interval == 0:
-                        handle_ocr_dedup(orig, ocr_eng, ocr_min_conf, enable_tts, ocr_ph, audio_ocr_ph)
+                        handle_ocr_dedup(orig, ocr_eng, ocr_min_conf, enable_tts, ocr_ph, audio_ocr_ph, now_t)
 
                 m_det.metric("Deteksi", len(dets))
                 m_danger.metric("⚠️ Bahaya", len(danger_list))
@@ -690,7 +687,10 @@ with tab1:
                     frame = cv2.resize(frame, (640, 480))
                     orig = frame.copy()
 
-                    prog.progress(min(cnt / max(total, 1), 1.0), text=f"Frame {cnt}/{total} ({cnt/fps:.1f}s)")
+                    # SINKRONISASI WAKTU PENTING (Gunakan durasi video, bukan durasi komputer render)
+                    video_sec = cnt / fps
+
+                    prog.progress(min(cnt / max(total, 1), 1.0), text=f"Frame {cnt}/{total} ({video_sec:.1f}s)")
 
                     frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
                     frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
@@ -699,15 +699,14 @@ with tab1:
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # ALERT
-                    now_time = time.time()
-                    danger_list, rambu_list = handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph, alert_cooldown)
+                    # ALERT — Berbasis waktu video (video_sec) agar suara pasti berulang dengan benar
+                    danger_list, rambu_list = handle_alerts_once(dets, video_sec, enable_audio, warn_ph, status_ph, audio_alert_ph, alert_cooldown)
 
-                    # OCR
+                    # OCR — Berbasis waktu video agar next text bisa terucap
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
-                            handle_ocr_dedup(orig, ocr, ocr_min_conf, enable_tts, ocr_ph, audio_ocr_ph)
+                            handle_ocr_dedup(orig, ocr, ocr_min_conf, enable_tts, ocr_ph, audio_ocr_ph, video_sec)
 
                     m_det.metric("Deteksi", len(dets))
                     m_danger.metric("⚠️ Bahaya", len(danger_list))
@@ -716,6 +715,8 @@ with tab1:
 
                     if show_logs:
                         log_ph.markdown('<br>'.join([f'[{ts}] {msg}' for ts, msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                    
+                    # Waktu sleep sangat kecil agar video tidak lemot
                     time.sleep(0.001)
 
                 cap.release()
@@ -817,6 +818,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v6.2 (Local cv2)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v6.3 (Local cv2)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
