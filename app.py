@@ -148,40 +148,38 @@ def ocr_read(frame, engine, min_conf=0.15):
         kern=np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
         sharp=cv2.filter2D(enh,-1,kern)
 
-        # Coba beberapa preprocessing
+        # Coba beberapa preprocessing — paragraph=False agar teks kecil kedetect
         best_texts = []  # (text, conf)
         for img in [sharp, enh, frame]:
             try:
-                res=engine.readtext(img, detail=1, paragraph=True)
+                res=engine.readtext(img, detail=1, paragraph=False)
                 if res:
                     for (bbox,txt,conf) in res:
                         txt=txt.strip()
-                        if len(txt)>2 and conf>min_conf:
+                        if len(txt)>=1 and conf>min_conf:
                             best_texts.append((txt, conf))
             except: continue
-            if best_texts: break  # Dapat hasil, stop
+            if best_texts: break
 
         if not best_texts:
             return ""
         
-        # SORT by confidence, ambil TERBAIK
+        # Sort by confidence descending
         best_texts.sort(key=lambda x:x[1], reverse=True)
         
-        # Ambil top results yang confidence-nya tinggi
+        # Ambil hasil — prioritaskan confidence tinggi, skip duplikat
         final_parts = []
         for txt, conf in best_texts:
-            if conf >= min_conf:
-                # Clean minimal — jangan terlalu agresif
-                cleaned = re.sub(r'[^\w\s\.,!?\-:/()%]', '', txt, flags=re.UNICODE)
-                cleaned = cleaned.strip()
-                if len(cleaned) > 2:
-                    # Cek apakah sudah ada yang mirip
-                    is_dup = False
-                    for existing in final_parts:
-                        if _similar(cleaned, existing, 0.6):
-                            is_dup = True; break
-                    if not is_dup:
-                        final_parts.append(cleaned)
+            cleaned = re.sub(r'[^\w\s\.,!?\-:/()%]', '', txt, flags=re.UNICODE).strip()
+            if len(cleaned) < 1: continue
+            # Skip single char kecuali angka
+            if len(cleaned)==1 and not cleaned.isdigit(): continue
+            is_dup = False
+            for ex in final_parts:
+                if _similar(cleaned, ex, 0.6):
+                    is_dup=True; break
+            if not is_dup:
+                final_parts.append(cleaned)
         
         if final_parts:
             result = ' '.join(final_parts)
@@ -203,16 +201,30 @@ def _similar(a, b, thr=0.6):
 # ============================================================
 # DETEKSI
 # ============================================================
+    # Class YOLO yang RELEVAN untuk tunanetra (dari COCO dataset)
+    # Sisanya (trotoar, bench, laptop, dll) di-SKIP
+M1_RELEVANT = {
+    0:'person', 1:'bicycle', 2:'car', 3:'motorcycle', 5:'bus',
+    7:'truck', 9:'traffic light', 11:'stop sign', 13:'bench',
+    15:'cat', 16:'dog', 17:'horse',
+}
+# Class ID yang relevan
+M1_RELEVANT_IDS = set(M1_RELEVANT.keys())
+
 def detect_single(frame, model, conf=0.35, source_model='m1'):
     """
-    Deteksi objek. source_model menentukan perilaku:
-    - 'm1': general objects → HANYA tampilkan, TIDAK pernah BAHAYA
-    - 'm2': obstacle (lubang/tangga) → BISA BAHAYA
-    - 'm3': rambu → info saja
+    - m1: HANYA orang/kendaraan/hewan → AMAN (info saja)
+    - m2: semua class dari model → BISA BAHAYA
+    - m3: semua class dari model → RAMBU (info)
     """
     if model is None: return frame, []
     try:
-        results = model.predict(frame, conf=conf, iou=0.45, verbose=False)
+        # M1 pakai conf rendah supaya orang kedetect
+        use_conf = max(conf - 0.05, 0.20) if source_model == 'm1' else conf
+        # M2 obstacle lebih sensitif
+        if source_model == 'm2': use_conf = max(conf - 0.10, 0.15)
+        
+        results = model.predict(frame, conf=use_conf, iou=0.45, verbose=False)
         dets = []
         if results and results[0].boxes is not None and len(results[0].boxes)>0:
             r=results[0]
@@ -227,24 +239,29 @@ def detect_single(frame, model, conf=0.35, source_model='m1'):
                 ar=(x2-x1)*(y2-y1)/(fw*fh)
                 px=((x1+x2)/2)/fw
                 
-                # Area minimum filter
-                if ar < 0.005: continue
+                # ── M1: FILTER HANYA CLASS RELEVAN ──
+                if source_model == 'm1':
+                    if ci not in M1_RELEVANT_IDS:
+                        continue  # Skip trotoar, bench, dll
+                    if ar < 0.01: continue  # Terlalu kecil
                 
-                # ── LOGIKA RISK LEVEL BERDASARKAN SOURCE MODEL ──
+                # M2/M3: tampilkan semua class dari model custom
+                if source_model in ('m2','m3'):
+                    if ar < 0.005: continue
+                
+                # ── RISK LEVEL ──
                 if source_model == 'm2':
-                    # M2 = obstacle model → INI yang bisa BAHAYA
-                    if cs > 0.40 and ar > 0.04:
+                    # M2 = obstacle → BISA BAHAYA
+                    if cs > 0.35 and ar > 0.03:
                         rl = 'BAHAYA'
-                    elif cs > 0.25 and ar > 0.015:
+                    elif cs > 0.20 and ar > 0.01:
                         rl = 'WASPADA'
                     else:
                         rl = 'AMAN'
                 elif source_model == 'm3':
-                    # M3 = rambu → selalu RAMBU (info)
                     rl = 'RAMBU'
                 else:
-                    # M1 = general → TIDAK PERNAH BAHAYA
-                    # Orang, mobil, dll = AMAN saja
+                    # M1 = TIDAK PERNAH BAHAYA
                     rl = 'AMAN'
                 
                 dets.append({
