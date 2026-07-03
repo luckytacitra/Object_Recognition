@@ -1,11 +1,12 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.4 (FINAL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.5 (FINAL FIX)
 # =====================================================================
 # GABUNGAN:
 # - Livecam: dari v6.0 (camera_input)
 # - Deteksi: dari v5.2 (lubang/tangga sensitif, M2 conf=0.10)
 # - OCR: dari v5.1 (bagus, anti-typo)
 # - Upload Video: tetap dari v5.1
+# - FIX: tambah danger_last_seen & rambu_last_seen di session_state
 # =====================================================================
 
 import streamlit as st
@@ -64,6 +65,8 @@ session_defaults = {
     'last_alert_time': defaultdict(lambda: -99.0),
     'danger_announced': set(),
     'rambu_announced': set(),
+    'danger_last_seen': {},      # ← TAMBAHKAN
+    'rambu_last_seen': {},       # ← TAMBAHKAN
     'ocr_triggered_cam': False,
     'ocr_triggered_vid': False,
     'ocr_frame_count': 0,
@@ -296,7 +299,6 @@ PERSON_KW = ['person', 'orang']
 def process_frame_detection(frame, model, conf=0.4, is_m2=False):
     if model is None: return frame, []
     try:
-        # v5.2: M2 conf sangat rendah (0.10) agar lubang/tangga kedetek
         effective_conf = 0.10 if is_m2 else conf
         results = model.predict(frame, conf=effective_conf, iou=0.45, verbose=False)
         detections = []
@@ -321,13 +323,11 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                     area = (x2 - x1) * (y2 - y1)
                     area_ratio = area / (fw * fh)
 
-                    # v5.2: Lubang kecil tetap masuk (area 0.002)
                     effective_min_area = 0.002 if is_obstacle else 0.015
                     if area_ratio < effective_min_area: continue
 
                     pos_x = ((x1 + x2) / 2) / fw
 
-                    # v5.2: ORANG TIDAK PERNAH BAHAYA
                     if is_obstacle:
                         if area_ratio > 0.04: risk_level = 'BAHAYA'
                         elif area_ratio > 0.01: risk_level = 'WASPADA'
@@ -337,7 +337,6 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                         elif conf_score > 0.35 and area_ratio > 0.05: risk_level = 'WASPADA'
                         else: risk_level = 'AMAN'
                     elif is_person:
-                        # ORANG TIDAK PERNAH BAHAYA, HANYA WASPADA
                         if conf_score > 0.40 and area_ratio > 0.10: risk_level = 'WASPADA'
                         else: risk_level = 'AMAN'
                     else:
@@ -378,7 +377,7 @@ def process_frame_detection_multi(frame, m1, m2, m3, conf=0.4):
     return out, all_d
 
 # ─────────────────────────────────────────────────────────────────────
-# PENANGANAN ALERT SEKALI & DEDUP OCR
+# PENANGANAN ALERT SEKALI & DEDUP OCR (FIX)
 # ─────────────────────────────────────────────────────────────────────
 REAPPEAR_WINDOW = 15.0  
 
@@ -387,6 +386,7 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if is_rambu(d['class'])]
 
+    # Bersihkan yang sudah lewat REAPPEAR_WINDOW
     for key in list(st.session_state.danger_announced):
         if now_time - st.session_state.danger_last_seen.get(key, -999) > REAPPEAR_WINDOW:
             st.session_state.danger_announced.discard(key)
@@ -486,7 +486,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.4</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.5</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -587,19 +587,16 @@ with tab1:
                 bgr = cv2.resize(bgr, (640, 480))
                 orig = bgr.copy()
                 
-                # Deteksi Multi Model (v5.2)
                 ann, dets = process_frame_detection_multi(bgr, st.session_state.model1, st.session_state.model2, st.session_state.model3, conf_threshold)
                 frame_ph.image(cv2.cvtColor(ann, cv2.COLOR_BGR2RGB), caption=f"{len(dets)} objek", use_container_width=True)
                 
                 for d in dets: st.session_state.detection_history.append(d)
                 st.session_state.detection_history = st.session_state.detection_history[-500:]
                 
-                # Alert (v5.2)
                 dl, rl = handle_alerts_once(dets, time.time(), enable_audio, warn_ph, status_ph, audio_alert_ph)
                 m_det.metric("Objek", len(dets))
                 m_danger.metric("⚠️", len(dl))
                 
-                # OCR (v5.1)
                 if btn_ocr_cam and st.session_state.ocr_engine:
                     text = perform_ocr_on_frame(orig, st.session_state.ocr_engine, ocr_min_conf)
                     if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
@@ -614,7 +611,7 @@ with tab1:
                     log_ph.markdown('<br>'.join([f'[{t}] {m}' for t, m in st.session_state.log[:10]]), unsafe_allow_html=True)
 
     # ============================================================
-    # MODE UPLOAD VIDEO (TETAP DARI v5.1 - TIDAK DIUBAH)
+    # MODE UPLOAD VIDEO
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
@@ -671,19 +668,16 @@ with tab1:
 
                     prog.progress(min(cnt / max(total, 1), 1.0), text=f"Frame {cnt}/{total} ({cnt/fps:.1f}s)")
 
-                    # Deteksi Multi Model (v5.2)
-                    frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
-                    frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
+                    ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
+                    frame_ph.image(cv2.cvtColor(ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                     st.session_state.last_frame = orig
 
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # Alert (v5.2)
                     now_time = time.time()
                     danger_list, rambu_list = handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph)
 
-                    # OCR (v5.1)
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -795,6 +789,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.4</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.5</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
