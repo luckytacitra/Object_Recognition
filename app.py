@@ -1,12 +1,5 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.10 (FIX SUARA ALL)
-# =====================================================================
-# PERBAIKAN:
-# 1. Suara rintangan: setiap objek baru (beda class) bersuara
-# 2. Suara teks: setiap teks baru (tidak mirip) bersuara
-# 3. Cooldown turun ke 2 detik
-# 4. OCR threshold turun ke 0.5 (lebih sensitif)
-# 5. Reset alert saat video baru
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.11 (FIX SUARA FINAL)
 # =====================================================================
 
 import streamlit as st
@@ -109,8 +102,8 @@ session_defaults = {
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
     'last_ocr_text': '',
-    'last_danger_text': '',
-    'detected_classes': set(),
+    'detected_classes': set(),      # Objek yang sudah bersuara
+    'active_objects': set(),        # Objek yang sedang muncul
 }
 for key, value in session_defaults.items():
     if key not in st.session_state:
@@ -159,6 +152,8 @@ def play_audio_safe(placeholder, audio_bytes):
             </script>
         """
         placeholder.markdown(html_code, unsafe_allow_html=True)
+        return True
+    return False
 
 def get_audio_bytes(text, lang='id'):
     try:
@@ -240,7 +235,7 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.30):
         enhanced = clahe.apply(denoised)
         results = None
         try:
-            results = ocr_engine.readtext(enhanced, detail=1, paragraph=False, text_threshold=0.6)
+            results = ocr_engine.readtext(enhanced, detail=1, paragraph=False, text_threshold=0.5)
         except: pass
         if not results:
             try: results = ocr_engine.readtext(gray, detail=1, paragraph=False)
@@ -254,7 +249,6 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.30):
             if texts:
                 raw = ' '.join(texts)
                 raw = re.sub(r'[^a-zA-Z0-9\s\.,!?\-:/()%]', '', raw)
-                # Simpel autocorrect
                 raw = raw.replace('dlarang', 'dilarang').replace('dlrang', 'dilarang')
                 raw = raw.replace('parkr', 'parkir').replace('msuk', 'masuk')
                 raw = raw.replace('brhenti', 'berhenti').replace('hti-hti', 'hati-hati')
@@ -262,8 +256,8 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.30):
         return "Tidak ada teks terdeteksi"
     except Exception as e: return f"Error: {str(e)[:30]}"
 
-def texts_are_similar(t1, t2, threshold=0.5):
-    """FIX: threshold turun ke 0.5 agar lebih sensitif bedakan teks"""
+def texts_are_similar(t1, t2, threshold=0.3):
+    """PERBAIKAN: threshold 0.3 - lebih sensitif bedakan teks"""
     if not t1 or not t2: return False
     a, b = ' '.join(t1.lower().split()), ' '.join(t2.lower().split())
     if a == b: return True
@@ -348,65 +342,60 @@ def process_frame_detection_multi(frame, m1, m2, m3):
     return out, all_d
 
 # ─────────────────────────────────────────────────────────────────────
-# ALERT - SUARA UNTUK SETIAP OBJEK BARU
+# ALERT - PERBAIKAN
 # ─────────────────────────────────────────────────────────────────────
 def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, cooldown=2):
     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if d['risk_level'] == 'RAMBU']
-
-    # FIX: RESET detected_classes setiap frame
-    current_classes = {d['class'] for d in dets}
     
-    # Cek objek baru yang belum pernah bersuara
-    new_danger = [d for d in danger if d['class'] not in st.session_state.get('detected_classes', set())]
-    new_waspada = [d for d in waspada if d['class'] not in st.session_state.get('detected_classes', set())]
-    new_rambu = [d for d in rambu if d['class'] not in st.session_state.get('detected_classes', set())]
-
-    # FIX: SUARA UNTUK OBJEK BARU
+    # Update active objects
+    current_classes = {d['class'] for d in dets}
+    st.session_state.active_objects = current_classes
+    
+    # Cari objek BARU (belum pernah bersuara)
+    new_danger = [d for d in danger if d['class'] not in st.session_state.detected_classes]
+    new_waspada = [d for d in waspada if d['class'] not in st.session_state.detected_classes]
+    new_rambu = [d for d in rambu if d['class'] not in st.session_state.detected_classes]
+    
+    # SUARA UNTUK OBJEK BARU
     if new_danger and enable_audio:
         d = new_danger[0]
-        key = d['class']
-        if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
-            msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
-            warn_ph.markdown(f'<div class="alert-danger">🚨 {msg}</div>', unsafe_allow_html=True)
-            audio = get_audio_bytes(msg)
-            if audio: 
-                audio_ph.empty()
-                play_audio_safe(audio_ph, audio)
-                add_log(f"BAHAYA: {msg}")
-            st.session_state.last_alert_time[key] = now_time
-            st.session_state.detected_classes.add(d['class'])
+        msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
+        warn_ph.markdown(f'<div class="alert-danger">🚨 {msg}</div>', unsafe_allow_html=True)
+        audio = get_audio_bytes(msg)
+        if audio:
+            audio_ph.empty()
+            play_audio_safe(audio_ph, audio)
+            add_log(f"🔊 SUARA: {msg}")
+        st.session_state.detected_classes.add(d['class'])
+        st.session_state.last_alert_time[d['class']] = now_time
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-danger">● BAHAYA</span></div>', unsafe_allow_html=True)
     
     elif new_waspada and enable_audio:
         d = new_waspada[0]
-        key = d['class']
-        if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
-            msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
-            warn_ph.markdown(f'<div class="alert-warning">⚡ {msg}</div>', unsafe_allow_html=True)
-            audio = get_audio_bytes(msg)
-            if audio:
-                audio_ph.empty()
-                play_audio_safe(audio_ph, audio)
-                add_log(f"WASPADA: {msg}")
-            st.session_state.last_alert_time[key] = now_time
-            st.session_state.detected_classes.add(d['class'])
+        msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
+        warn_ph.markdown(f'<div class="alert-warning">⚡ {msg}</div>', unsafe_allow_html=True)
+        audio = get_audio_bytes(msg)
+        if audio:
+            audio_ph.empty()
+            play_audio_safe(audio_ph, audio)
+            add_log(f"🔊 SUARA: {msg}")
+        st.session_state.detected_classes.add(d['class'])
+        st.session_state.last_alert_time[d['class']] = now_time
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-warning" style="background:#fff5e0;color:#cc8800;border-color:#ffcc66;">● WASPADA</span></div>', unsafe_allow_html=True)
     
     elif new_rambu and enable_audio:
         d = new_rambu[0]
-        key = d['class']
-        if (now_time - st.session_state.last_alert_time[key]) >= cooldown:
-            msg = generate_rambu_alert(d['class'])
-            warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
-            audio = get_audio_bytes(msg)
-            if audio:
-                audio_ph.empty()
-                play_audio_safe(audio_ph, audio)
-                add_log(f"RAMBU: {msg}")
-            st.session_state.last_alert_time[key] = now_time
-            st.session_state.detected_classes.add(d['class'])
+        msg = generate_rambu_alert(d['class'])
+        warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
+        audio = get_audio_bytes(msg)
+        if audio:
+            audio_ph.empty()
+            play_audio_safe(audio_ph, audio)
+            add_log(f"🔊 SUARA: {msg}")
+        st.session_state.detected_classes.add(d['class'])
+        st.session_state.last_alert_time[d['class']] = now_time
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● AKTIF</span><span class="pill pill-ocr">● RAMBU</span></div>', unsafe_allow_html=True)
     
     else:
@@ -418,19 +407,21 @@ def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, co
 def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph):
     text = perform_ocr_on_frame(frame, ocr_eng, min_conf)
     if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
-        # FIX: threshold 0.5 agar lebih sensitif
-        if not texts_are_similar(text, st.session_state.last_ocr_text, threshold=0.5):
+        # PERBAIKAN: threshold 0.3 - lebih sensitif
+        if not texts_are_similar(text, st.session_state.last_ocr_text, threshold=0.3):
             st.session_state.last_ocr_text = text
             ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>', unsafe_allow_html=True)
-            add_log(f"OCR: {text[:40]}")
+            add_log(f"📖 TEKS BARU: {text[:40]}")
             if en_tts:
                 a = get_audio_bytes(f"Ada tulisan: {text}")
-                if a: 
+                if a:
                     aocr_ph.empty()
                     play_audio_safe(aocr_ph, a)
+                    add_log(f"🔊 SUARA: Ada tulisan: {text[:30]}")
             return True
         else:
-            ocr_ph.markdown(f'<div class="ocr-result" style="opacity:0.6;">📝 {text}<br><small>(Teks sama)</small></div>', unsafe_allow_html=True)
+            ocr_ph.markdown(f'<div class="ocr-result" style="opacity:0.6;">📝 {text}<br><small>(Teks sama, tidak diulang)</small></div>', unsafe_allow_html=True)
+            add_log(f"📖 TEKS SAMA: {text[:40]} (tidak diulang)")
     return False
 
 # ─────────────────────────────────────────────────────────────────────
@@ -456,7 +447,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.10</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.11</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -496,7 +487,7 @@ with st.sidebar:
     st.markdown(f'<div class="pills"><span class="pill pill-model">{s1} M1</span><span class="pill pill-model">{s2} M2</span><span class="pill pill-model">{s3} M3</span><span class="pill pill-model">{so} OCR</span></div>', unsafe_allow_html=True)
     
     enable_audio = st.checkbox("🔊 Audio", value=True)
-    alert_cooldown = st.slider("Cooldown (s)", 1, 5, 2, help="1 = suara lebih sering")
+    alert_cooldown = st.slider("Cooldown (s)", 1, 5, 2)
     ocr_min_conf = st.slider("OCR Confidence", 0.1, 0.9, 0.30, 0.05)
     ocr_scan_interval = st.slider("OCR Scan Interval", 1, 30, 10)
     frame_skip = st.slider("Frame Skip", 1, 10, 2)
@@ -507,6 +498,7 @@ with st.sidebar:
         st.session_state.last_alert_time = defaultdict(lambda: -99.0)
         st.session_state.last_ocr_text = ''
         st.session_state.detected_classes = set()
+        st.session_state.active_objects = set()
         st.success("Reset!")
 
 # ─────────────────────────────────────────────────────────────────────
@@ -576,7 +568,7 @@ with tab1:
                     log_ph.markdown(render_log(), unsafe_allow_html=True)
 
     # ============================================================
-    # UPLOAD VIDEO - FIX SUARA ALL
+    # UPLOAD VIDEO
     # ============================================================
     else:
         uploaded = st.file_uploader("Upload video", type=['mp4','avi','mov','mkv'])
@@ -590,6 +582,7 @@ with tab1:
                 st.session_state.last_ocr_text = ''
                 st.session_state.last_alert_time = defaultdict(lambda: -99.0)
                 st.session_state.detected_classes = set()
+                st.session_state.active_objects = set()
                 ocr_ph.empty()
                 st.info("🔄 Video baru diupload.")
 
@@ -626,9 +619,9 @@ with tab1:
                 cnt, start = 0, time.time()
                 prog = st.progress(0)
                 
-                # RESET UNTUK SUARA
                 st.session_state.last_alert_time = defaultdict(lambda: -99.0)
                 st.session_state.detected_classes = set()
+                st.session_state.active_objects = set()
                 st.session_state.last_ocr_text = ''
 
                 while True:
@@ -652,7 +645,6 @@ with tab1:
                     now_time = time.time()
                     danger_list, rambu_list = handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph, cooldown=alert_cooldown)
 
-                    # FIX: OCR threshold 0.5
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -666,7 +658,6 @@ with tab1:
                     if show_logs:
                         log_ph.markdown(render_log(), unsafe_allow_html=True)
                     
-                    # FIX: delay minimal
                     time.sleep(0.01)
 
                 cap.release()
@@ -753,6 +744,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.10</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.11</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
