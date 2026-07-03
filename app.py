@@ -1,12 +1,13 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.7 (FINAL FIX)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.8 (FINAL FIX LOG)
 # =====================================================================
 # PERBAIKAN:
-# 1. Filter ketat untuk tangga/rambu
-# 2. Suara sampai akhir video
-# 3. YOLO conf=0.7 (seperti Colab)
-# 4. M2 lubang conf=0.10, area=0.002
-# 5. FIX: duplicate camera_input key
+# 1. Render log dengan error handling
+# 2. Filter ketat untuk tangga/rambu
+# 3. Suara sampai akhir video
+# 4. YOLO conf=0.7
+# 5. M2 lubang conf=0.10, area=0.002
+# 6. FIX: duplicate camera_input key
 # =====================================================================
 
 import streamlit as st
@@ -119,8 +120,36 @@ for key, value in session_defaults.items():
         st.session_state[key] = value
 
 def add_log(msg):
-    st.session_state.log.insert(0, (time.strftime("%H:%M:%S"), msg))
-    st.session_state.log = st.session_state.log[:30]
+    try:
+        st.session_state.log.insert(0, (time.strftime("%H:%M:%S"), str(msg)))
+        st.session_state.log = st.session_state.log[:30]
+    except Exception as e:
+        logger.error(f"Add log error: {e}")
+
+def render_log():
+    """Render log dengan aman - handle error jika format tidak sesuai"""
+    try:
+        if not st.session_state.log:
+            return '<div style="color: #ccc; text-align: center; padding: 1rem;">Belum ada aktivitas</div>'
+        
+        rows = []
+        for item in st.session_state.log[:10]:
+            try:
+                if isinstance(item, (tuple, list)) and len(item) >= 2:
+                    ts, msg = item[0], item[1]
+                    rows.append(f'[{ts}] {msg}')
+                else:
+                    continue
+            except:
+                continue
+        
+        if not rows:
+            return '<div style="color: #ccc; text-align: center; padding: 1rem;">Belum ada aktivitas</div>'
+        
+        return '<br>'.join(rows)
+    except Exception as e:
+        logger.error(f"Render log error: {e}")
+        return '<div style="color: #ccc; text-align: center; padding: 1rem;">Error loading logs</div>'
 
 # ─────────────────────────────────────────────────────────────────────
 # FUNGSI AUDIO
@@ -206,7 +235,7 @@ def generate_alert(name, pos_x, area):
     else: return f"Hati-hati, ada {nama} {pos}. {arah} pelan-pelan."
 
 # ============================================================
-# OCR - VERSI v5.1
+# OCR
 # ============================================================
 COMMON_WORDS = {
     'jln':'jalan','jl':'jalan','dlarang':'dilarang','dlrang':'dilarang',
@@ -287,7 +316,7 @@ def texts_are_similar(t1, t2, threshold=0.75):
     return len(s1 & s2) / len(s1 | s2) >= threshold
 
 # ============================================================
-# DETEKSI - FILTER KETAT
+# DETEKSI
 # ============================================================
 def process_frame_detection(frame, model, conf=0.4, is_m2=False):
     if model is None: return frame, []
@@ -472,7 +501,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.7</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.8</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -548,10 +577,11 @@ with tab1:
     with c2: m_danger = st.empty()
     with c3: m_fps = st.empty()
 
-    if show_logs: log_ph = st.expander("📋 Logs").empty()
+    if show_logs: 
+        log_ph = st.expander("📋 Logs")
 
     # ============================================================
-    # WEBCAM (key="cam_tab1")
+    # WEBCAM
     # ============================================================
     if mode == "📹 Webcam (Foto)":
         st.markdown('<div class="alert-info">📸 Ambil foto → otomatis deteksi. Klik "Baca Teks" untuk OCR.</div>', unsafe_allow_html=True)
@@ -560,7 +590,7 @@ with tab1:
         with col_btn:
             btn_ocr_cam = st.button("📖 Baca Teks", key="ocr_cam", use_container_width=True)
         
-        cam = st.camera_input("📸 Ambil foto", key="cam_tab1")  # ← KEY UNIK
+        cam = st.camera_input("📸 Ambil foto", key="cam_tab1")
         
         if cam:
             if not st.session_state.model1 and not st.session_state.model2:
@@ -595,7 +625,7 @@ with tab1:
                         ocr_ph.markdown('<div class="ocr-result" style="opacity:0.5">📝 Tidak ada teks</div>', unsafe_allow_html=True)
                 
                 if show_logs:
-                    log_ph.markdown('<br>'.join([f'[{t}] {m}' for t, m in st.session_state.log[:10]]), unsafe_allow_html=True)
+                    log_ph.markdown(render_log(), unsafe_allow_html=True)
 
     # ============================================================
     # UPLOAD VIDEO
@@ -680,7 +710,7 @@ with tab1:
                     m_fps.metric("FPS", f"{cnt/elapsed:.1f}" if elapsed > 0 else "0")
 
                     if show_logs:
-                        log_ph.markdown('<br>'.join([f'[{ts}] {m}' for ts, msg in st.session_state.log[:10]]), unsafe_allow_html=True)
+                        log_ph.markdown(render_log(), unsafe_allow_html=True)
                     
                     delay = (frame_skip / fps)
                     time.sleep(max(delay - 0.05, 0.001))
@@ -695,7 +725,7 @@ with tab1:
                 except: pass
 
 # ═════════════════════════════════════════════════════════════════════
-# TAB 2: TEXT READING (key="cam_tab2_ocr")
+# TAB 2: TEXT READING
 # ═════════════════════════════════════════════════════════════════════
 with tab2:
     st.markdown("### 📖 Text Reading")
@@ -717,7 +747,7 @@ with tab2:
                 st.success("🔊 Audio diputar")
 
     if mode2 == "📷 Capture":
-        cam_ocr = st.camera_input("📸 Ambil foto", key="cam_tab2_ocr")  # ← KEY UNIK
+        cam_ocr = st.camera_input("📸 Ambil foto", key="cam_tab2_ocr")
         if cam_ocr is not None:
             if st.session_state.ocr_engine is None: st.error("⚠️ Load OCR dulu!")
             else:
@@ -768,6 +798,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.7</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.8</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
