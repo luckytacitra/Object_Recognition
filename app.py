@@ -196,6 +196,17 @@ def generate_rambu_alert(name):
     return f"Ada {id_nama(name)}"
 
 # ─── OCR dari v5.12 (sudah bagus) ───
+def _similar_text(a, b, thr=0.75):
+    """True kalau 2 teks mirip (cuma beda typo)"""
+    if not a or not b: return False
+    a=' '.join(a.lower().split()); b=' '.join(b.lower().split())
+    if a==b: return True
+    if len(a)<3 or len(b)<3: return a==b
+    sa=set(a[i:i+2] for i in range(len(a)-1))
+    sb=set(b[i:i+2] for i in range(len(b)-1))
+    if not sa or not sb: return False
+    return len(sa&sb)/len(sa|sb) >= thr
+
 def perform_ocr(frame, engine, min_conf=0.30):
     if engine is None: return ""
     try:
@@ -247,12 +258,10 @@ def detect_frame(frame, model, conf, source):
                               r.boxes.conf.cpu().numpy(),
                               r.boxes.cls.cpu().numpy().astype(int)):
             cn=r.names[ci]; cl=cn.lower()
-            # Filter berdasarkan source
+            # Filter HANYA untuk M1 (YOLO COCO 80 class - banyak noise)
+            # M2 & M3 model custom user: tampilkan SEMUA class yang dideteksi
             if source=='m1':
                 if cl not in KELAS_YOLO_RELEVAN: continue
-            elif source=='m2':
-                if cl not in KELAS_BEST_LOWER: continue
-            # source=='m3': semua class OK
 
             x1,y1,x2,y2=map(int,box)
             ar=(x2-x1)*(y2-y1)/(fw*fh)
@@ -263,11 +272,21 @@ def detect_frame(frame, model, conf, source):
 
             # Risk level
             if source=='m2':
-                is_fatal=cl in FATAL_LOWER
-                min_c=CONF_MIN_FATAL.get(cl,0.30)
-                if is_fatal and cs>=min_c and ar>=0.03: rl='BAHAYA'
-                elif is_fatal and cs>=min_c*0.7 and ar>=0.01: rl='WASPADA'
-                else: rl='AMAN'
+                # Cek apakah class ini objek berbahaya (kata kunci fleksibel)
+                bahaya_kw = ['pothole','lubang','hole','obstacle','rintangan',
+                             'stairs','tangga','step','road-barrier','pembatas',
+                             'pole','tiang','barrier','crack','retak']
+                is_fatal = any(kw in cl for kw in bahaya_kw)
+                # Skip class yang bukan bahaya (trotoar, jembatan info, dll)
+                aman_kw = ['sidewalk','trotoar','crosswalk','penyeberangan',
+                           'over-bridge','jembatan','railway','rel','tree','pohon']
+                is_aman_obj = any(kw in cl for kw in aman_kw)
+                if is_fatal:
+                    if cs>=0.35 and ar>=0.03: rl='BAHAYA'
+                    elif cs>=0.25 and ar>=0.01: rl='WASPADA'
+                    else: rl='AMAN'
+                else:
+                    rl='AMAN'
             elif source=='m3':
                 rl='RAMBU'
             else:
@@ -490,13 +509,15 @@ with tab1:
                         st.session_state.ocr_frame_count+=1
                         if st.session_state.ocr_frame_count%ocr_scan_interval==0:
                             text=perform_ocr(orig,ocr_eng,ocr_min_conf)
-                            if text and text!=st.session_state.last_ocr_text:
-                                st.session_state.last_ocr_text=text
-                                ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>',unsafe_allow_html=True)
-                                add_log(f"📖 {text[:30]}")
-                                if enable_tts:
-                                    a=get_audio_bytes(f"Ada tulisan: {text}")
-                                    if a: audio_ocr_ph.empty();play_audio_safe(audio_ocr_ph,a)
+                            if text and len(text)>3:
+                                # Suara HANYA kalau teks BEDA (bukan typo dari teks sebelumnya)
+                                if not _similar_text(text, st.session_state.last_ocr_text):
+                                    st.session_state.last_ocr_text=text
+                                    ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>',unsafe_allow_html=True)
+                                    add_log(f"📖 {text[:30]}")
+                                    if enable_tts:
+                                        a=get_audio_bytes(f"Ada tulisan: {text}")
+                                        if a: audio_ocr_ph.empty();play_audio_safe(audio_ocr_ph,a)
                     m_det.metric("Deteksi",len(dets));m_danger.metric("⚠️",len(dl))
                     el=time.time()-t0
                     m_fps.metric("FPS",f"{cnt/el:.1f}" if el>0 else "0")
