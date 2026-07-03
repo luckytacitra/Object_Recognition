@@ -1,5 +1,11 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v5.0 (FINAL STABIL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT DASHBOARD v5.1 (FINAL FIX)
+# =====================================================================
+# PERBAIKAN:
+# 1. Lubang/tangga: conf M2 = 0.10, area filter = 0.002
+# 2. Orang: TIDAK PERNAH BAHAYA, hanya WASPADA
+# 3. OCR: similarity threshold turun ke 0.5 agar lebih sensitif bedakan teks
+# 4. Audio OCR: fix supaya suara keluar setiap teks berbeda
 # =====================================================================
 
 import streamlit as st
@@ -59,15 +65,14 @@ session_defaults = {
     'model1': None, 'model2': None, 'model3': None, 'ocr_engine': None,
     'last_frame': None, 'log': [], 'detection_history': [],
     'last_alert_time': defaultdict(lambda: -99.0),
-    'danger_last_seen': {},      
-    'danger_announced': set(),   
-    'rambu_last_seen': {},
+    'danger_announced': set(),
     'rambu_announced': set(),
     'ocr_triggered_cam': False,
     'ocr_triggered_vid': False,
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
     'last_ocr_text': '',
+    'ocr_silence_count': 0,
 }
 for key, value in session_defaults.items():
     if key not in st.session_state:
@@ -113,11 +118,11 @@ def get_audio_bytes(text, lang='id'):
 INDO_NAMES = {
     'person':'orang', 'car':'mobil', 'bus':'bus', 'truck':'truk',
     'motorcycle':'motor', 'bicycle':'sepeda', 'dog':'anjing', 'cat':'kucing',
-    'pothole':'lubang jalan', 'stairs':'tangga', 'obstacle':'rintangan',
+    'pothole':'lubang', 'stairs':'tangga', 'obstacle':'rintangan',
     'road-barrier':'pembatas jalan', 'pole':'tiang', 'train':'kereta',
     'stop sign':'rambu stop', 'traffic light':'lampu lalu lintas',
-    'sidewalk':'trotoar', 'crosswalk':'jalur penyeberangan', 'tree':'pohon',
-    'animal':'hewan', 'vehicle':'kendaraan', 'hole':'lubang jalan', 'step':'tangga',
+    'sidewalk':'trotoar', 'crosswalk':'zebra cross', 'tree':'pohon',
+    'animal':'hewan', 'vehicle':'kendaraan', 'hole':'lubang', 'step':'tangga',
     'dilarang masuk':'dilarang masuk', 'dilarang parkir':'dilarang parkir',
     'dilarang berhenti':'dilarang berhenti', 'hati-hati':'hati-hati',
     'rumah sakit':'rumah sakit', 'masjid':'masjid', 'gereja':'gereja',
@@ -166,9 +171,9 @@ def generate_alert(name, pos_x, area):
     elif area > 0.05: return f"Awas! Ada {nama} {pos}. {arah}!"
     else: return f"Hati-hati, ada {nama} {pos}. {arah} pelan-pelan."
 
-# ─────────────────────────────────────────────────────────────────────
-# OCR - FILTER NOISE & ANTI TYPO/MENGEJA
-# ─────────────────────────────────────────────────────────────────────
+# ============================================================
+# OCR - AUTO CORRECT + FILTER KARAKTER ANEH
+# ============================================================
 COMMON_WORDS = {
     'jln':'jalan','jl':'jalan','dlarang':'dilarang','dlrang':'dilarang',
     'dilarag':'dilarang','dilarng':'dilarang','dilrang':'dilarang',
@@ -183,7 +188,8 @@ COMMON_WORDS = {
     'lampo':'lampu','mrah':'merah','hjau':'hijau','kunng':'kuning',
     'pnyebrangan':'penyeberangan','penyebrangn':'penyeberangan','zebr':'zebra',
     'crss':'cross','mtr':'meter','kec':'kecepatan','maks':'maksimal',
-    'min':'minimal','spb':'SPBU','phtobox':'photobox','z0na':'zona','zon':'zona'
+    'min':'minimal','spb':'SPBU','phtobox':'photobox','z0na':'zona','zon':'zona',
+    'inspirasi':'inspirasi','foto':'foto','box':'box',
 }
 
 def autocorrect_word(word):
@@ -222,7 +228,7 @@ def fix_spelled_text(text):
     return ' '.join(result_words)
 
 def clean_ocr_text(raw_text):
-    if not raw_text or raw_text == "Tidak ada teks terdeteksi": return raw_text
+    if not raw_text: return "Tidak ada teks terdeteksi"
     text = fix_spelled_text(raw_text)
     text = re.sub(r'[^a-zA-Z0-9\s\.,!?\-:/()%]', '', text)
     
@@ -234,18 +240,16 @@ def clean_ocr_text(raw_text):
     text = ' '.join(' '.join(corrected).split())
     return text.title() if len(text) >= 3 else "Tidak ada teks terdeteksi"
 
-OCR_ALLOWLIST = ('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,-:;/()!?%&@')
-
-def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.35):
+def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.30):
     if ocr_engine is None: return "OCR engine tidak tersedia"
     try:
         if len(frame.shape) == 3: gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else: gray = frame
 
         h, w = gray.shape
-        if w < 1000:
-            scale = 1000 / w
-            gray = cv2.resize(gray, (1000, int(h * scale)), interpolation=cv2.INTER_CUBIC)
+        if w < 800:
+            scale = 800 / w
+            gray = cv2.resize(gray, (800, int(h * scale)), interpolation=cv2.INTER_CUBIC)
 
         denoised = cv2.fastNlMeansDenoising(gray, None, h=10, templateWindowSize=7, searchWindowSize=21)
         clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
@@ -253,11 +257,11 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.35):
 
         results = None
         try:
-            results = ocr_engine.readtext(enhanced, detail=1, paragraph=False, allowlist=OCR_ALLOWLIST, text_threshold=0.6, low_text=0.35, contrast_ths=0.1, adjust_contrast=0.7)
+            results = ocr_engine.readtext(enhanced, detail=1, paragraph=False, text_threshold=0.6)
         except: pass
         
         if not results:
-            try: results = ocr_engine.readtext(gray, detail=1, paragraph=False, allowlist=OCR_ALLOWLIST)
+            try: results = ocr_engine.readtext(gray, detail=1, paragraph=False)
             except: pass
 
         if results:
@@ -271,20 +275,24 @@ def perform_ocr_on_frame(frame, ocr_engine, min_conf=0.35):
                 return clean_ocr_text(raw_result)
                 
         return "Tidak ada teks terdeteksi"
-    except Exception as e: return f"Error: {str(e)[:30]}"
+    except Exception as e: 
+        return f"Error: {str(e)[:30]}"
 
-def texts_are_similar(t1, t2, threshold=0.75):
+def texts_are_similar(t1, t2, threshold=0.5):
+    """Fuzzy match - threshold 0.5 agar lebih sensitif bedakan teks"""
     if not t1 or not t2: return False
     a, b = ' '.join(t1.lower().split()), ' '.join(t2.lower().split())
     if a == b: return True
-    if len(a) < 3 or len(b) < 3: return a == b
-    s1, s2 = set(a[i:i+2] for i in range(len(a)-1)), set(b[i:i+2] for i in range(len(b)-1))
+    if len(a) < 2 or len(b) < 2: return a == b
+    # Bigram overlap
+    s1 = set(a[i:i+2] for i in range(len(a)-1))
+    s2 = set(b[i:i+2] for i in range(len(b)-1))
     if not s1 or not s2: return a == b
     return len(s1 & s2) / len(s1 | s2) >= threshold
 
-# ─────────────────────────────────────────────────────────────────────
-# DETEKSI YOLO - LUBANG & ORANG FIX
-# ─────────────────────────────────────────────────────────────────────
+# ============================================================
+# DETEKSI YOLO - LUBANG & TANGGA PRIORITAS
+# ============================================================
 OBSTACLE_KW = ['pothole', 'lubang', 'hole', 'stairs', 'stair', 'step', 'tangga', 'obstacle', 'rintangan', 'road-barrier', 'barrier', 'pembatas', 'pole', 'tiang']
 VEHICLE_KW = ['car', 'mobil', 'bus', 'truck', 'truk', 'vehicle', 'kendaraan', 'motorcycle', 'motor', 'bicycle', 'sepeda', 'train', 'kereta']
 PERSON_KW = ['person', 'orang']
@@ -292,8 +300,8 @@ PERSON_KW = ['person', 'orang']
 def process_frame_detection(frame, model, conf=0.4, is_m2=False):
     if model is None: return frame, []
     try:
-        # PERBAIKAN: Model 2 (Lubang/Tangga) butuh conf sangat rendah agar terdeteksi
-        effective_conf = max(conf - 0.20, 0.10) if is_m2 else conf
+        # PERBAIKAN 1: M2 conf sangat rendah agar lubang/tangga kedetek
+        effective_conf = 0.10 if is_m2 else conf
         results = model.predict(frame, conf=effective_conf, iou=0.45, verbose=False)
         detections = []
         
@@ -317,13 +325,13 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                     area = (x2 - x1) * (y2 - y1)
                     area_ratio = area / (fw * fh)
 
-                    # PERBAIKAN: Lubang kecil tetap masuk
+                    # PERBAIKAN 2: Lubang kecil tetap masuk (area 0.002)
                     effective_min_area = 0.002 if is_obstacle else 0.015
                     if area_ratio < effective_min_area: continue
 
                     pos_x = ((x1 + x2) / 2) / fw
 
-                    # PERBAIKAN LOGIKA BAHAYA
+                    # PERBAIKAN 3: ORANG TIDAK PERNAH BAHAYA
                     if is_obstacle:
                         if area_ratio > 0.04: risk_level = 'BAHAYA'
                         elif area_ratio > 0.01: risk_level = 'WASPADA'
@@ -349,10 +357,7 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                     color = (0, 0, 255) if risk_level == 'BAHAYA' else (0, 165, 255) if risk_level == 'WASPADA' else (0, 255, 0)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     label = f"{get_indo_name(cls_name)} {conf_score:.2f}"
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    (tw, th), _ = cv2.getTextSize(label, font, 0.55, 2)
-                    cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 4, y1), color, -1)
-                    cv2.putText(frame, label, (x1 + 2, y1 - 4), font, 0.55, (255, 255, 255), 2)
+                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         return frame, detections
     except Exception as e:
@@ -362,11 +367,12 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
 def process_frame_detection_multi(frame, m1, m2, m3, conf=0.4):
     out = frame.copy()
     all_d = []
-    if m1:
-        out, d = process_frame_detection(out, m1, conf, is_m2=False)
-        all_d.extend(d)
+    # PRIORITAS: M2 dulu (lubang/tangga)
     if m2:
         out, d = process_frame_detection(out, m2, conf, is_m2=True)
+        all_d.extend(d)
+    if m1:
+        out, d = process_frame_detection(out, m1, conf, is_m2=False)
         all_d.extend(d)
     if m3:
         out, d = process_frame_detection(out, m3, conf, is_m2=False)
@@ -383,17 +389,9 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if is_rambu(d['class'])]
 
-    for key in list(st.session_state.danger_announced):
-        if now_time - st.session_state.danger_last_seen.get(key, -999) > REAPPEAR_WINDOW:
-            st.session_state.danger_announced.discard(key)
-    for key in list(st.session_state.rambu_announced):
-        if now_time - st.session_state.rambu_last_seen.get(key, -999) > REAPPEAR_WINDOW:
-            st.session_state.rambu_announced.discard(key)
-
     if danger:
         d = danger[0]
         key = d['class']
-        st.session_state.danger_last_seen[key] = now_time
         msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
         warn_ph.markdown(f'<div class="alert-danger">⚠️ {msg}</div>', unsafe_allow_html=True)
         
@@ -409,7 +407,6 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     elif waspada:
         d = waspada[0]
         key = f"w_{d['class']}"
-        st.session_state.danger_last_seen[key] = now_time
         msg = generate_alert(d['class'], d['position_x'], d['area_ratio'])
         warn_ph.markdown(f'<div class="alert-warning">⚡ {msg}</div>', unsafe_allow_html=True)
         
@@ -425,7 +422,6 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     elif rambu:
         d = rambu[0]
         key = d['class']
-        st.session_state.rambu_last_seen[key] = now_time
         msg = generate_rambu_alert(d['class'])
         warn_ph.markdown(f'<div class="alert-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
         
@@ -446,9 +442,9 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
 
 def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph):
     text = perform_ocr_on_frame(frame, ocr_eng, min_conf)
-    if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
-        # PENCEGAHAN BACA BERULANG
-        if not texts_are_similar(text, st.session_state.last_ocr_text):
+    if text and text != "Tidak ada teks terdeteksi" and len(text) > 2:
+        # PERBAIKAN 4: threshold 0.5 agar lebih sensitif bedakan teks
+        if not texts_are_similar(text, st.session_state.last_ocr_text, threshold=0.5):
             st.session_state.last_ocr_text = text
             ocr_ph.markdown(f'<div class="ocr-result">📝 {text}</div>', unsafe_allow_html=True)
             add_log(f"OCR: {text[:40]}")
@@ -483,7 +479,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu (Lokal & Video)</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.1</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -525,9 +521,9 @@ with st.sidebar:
     so = "✅" if st.session_state.ocr_engine else "⚠️"
     st.markdown(f'<div class="pills"><span class="pill pill-model">{s1} M1</span><span class="pill pill-model">{s2} M2</span><span class="pill pill-model">{s3} M3</span><span class="pill pill-model">{so} OCR</span></div>', unsafe_allow_html=True)
     
-    conf_threshold = st.slider("Confidence Deteksi", 0.1, 0.9, 0.35, 0.05, help="M2 (lubang) otomatis diturunkan 0.15 dari nilai ini")
+    conf_threshold = st.slider("Confidence Deteksi", 0.1, 0.9, 0.30, 0.05, help="M2 (lubang) otomatis conf=0.10")
     enable_audio = st.checkbox("🔊 Audio Alert", value=True)
-    ocr_min_conf = st.slider("OCR Confidence", 0.1, 0.9, 0.30, 0.05)
+    ocr_min_conf = st.slider("OCR Confidence", 0.1, 0.9, 0.25, 0.05)
     ocr_scan_interval = st.slider("OCR Scan Tiap N Frame", 1, 30, 10)
     frame_skip = st.slider("Frame Skip (Biar Ringan)", 1, 10, 2)
     enable_tts = st.checkbox("🔊 TTS Baca Teks", value=True)
@@ -563,10 +559,10 @@ with tab1:
     if show_logs: log_ph = st.expander("📋 Logs").empty()
 
     # ============================================================
-    # MODE WEBCAM LOKAL (cv2)
+    # MODE WEBCAM LOKAL
     # ============================================================
     if mode == "📹 Webcam LOKAL (Lancar)":
-        st.info("💡 Mode ini menggunakan kamera bawaan laptop secara langsung. Jauh lebih cepat dan stabil tanpa WebRTC.")
+        st.info("💡 Mode ini menggunakan kamera bawaan laptop secara langsung.")
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1: run_cam = st.toggle("🔴 AKTIFKAN KAMERA LIVE")
@@ -598,22 +594,18 @@ with tab1:
                 if not ret: break
                 cnt += 1
                 
-                # Biar ringan
                 if cnt % frame_skip != 0: continue
                 orig = frame.copy()
                 now_t = time.time()
                 
-                # Deteksi Multi Model
                 frame_ann, dets = process_frame_detection_multi(frame, m1, m2, m3, conf_threshold)
                 frame_ph.image(cv2.cvtColor(frame_ann, cv2.COLOR_BGR2RGB), use_container_width=True)
                 
                 for d in dets: st.session_state.detection_history.append(d)
                 st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                # Alert Pintar
                 danger_list, rambu_list = handle_alerts_once(dets, now_t, enable_audio, warn_ph, status_ph, audio_alert_ph)
                 
-                # OCR (Anti ngulang)
                 if st.session_state.ocr_triggered_cam and ocr_eng is not None:
                     if cnt % ocr_scan_interval == 0:
                         handle_ocr_dedup(orig, ocr_eng, ocr_min_conf, enable_tts, ocr_ph, audio_ocr_ph)
@@ -645,7 +637,7 @@ with tab1:
                 st.session_state.danger_announced = set()
                 st.session_state.rambu_announced = set()
                 ocr_ph.empty()
-                st.info("🔄 Video baru diupload. Silakan klik 'Start' atau 'Baca Teks'.")
+                st.info("🔄 Video baru diupload.")
 
         col1, col2 = st.columns(2)
         with col1: btn_start = st.button("▶️ Start Detection", use_container_width=True)
@@ -694,11 +686,9 @@ with tab1:
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # ALERT — sekali umumkan
                     now_time = time.time()
                     danger_list, rambu_list = handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph)
 
-                    # OCR
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -787,20 +777,6 @@ with tab3:
         } for d in hist[-100:]])
         st.dataframe(df, use_container_width=True)
 
-        st.markdown("#### 📈 Ringkasan per Objek")
-        class_counts = defaultdict(lambda: {'total': 0, 'bahaya': 0, 'waspada': 0})
-        for d in hist:
-            name = get_indo_name(d['class'])
-            class_counts[name]['total'] += 1
-            if d['risk_level'] == 'BAHAYA': class_counts[name]['bahaya'] += 1
-            elif d['risk_level'] == 'WASPADA': class_counts[name]['waspada'] += 1
-
-        summary_df = pd.DataFrame([
-            {'Objek': name, 'Total': v['total'], 'Bahaya': v['bahaya'], 'Waspada': v['waspada']}
-            for name, v in sorted(class_counts.items(), key=lambda x: x[1]['total'], reverse=True)
-        ])
-        st.dataframe(summary_df, use_container_width=True)
-
         if st.button("🗑️ Hapus Semua Data"):
             st.session_state.detection_history = []
             st.rerun()
@@ -810,6 +786,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.0 (Local cv2)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.1</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
