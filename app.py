@@ -1,12 +1,12 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.6 (FINAL FIX ALL)
+# ASISTEN NAVIGASI TUNANETRA - STREAMLIT v5.7 (FINAL FIX)
 # =====================================================================
 # PERBAIKAN:
-# 1. Filter ketat untuk tangga/rambu (cek kelas exact)
-# 2. Suara sampai akhir video (fix loop)
+# 1. Filter ketat untuk tangga/rambu
+# 2. Suara sampai akhir video
 # 3. YOLO conf=0.7 (seperti Colab)
 # 4. M2 lubang conf=0.10, area=0.002
-# 5. Hanya kelas yang ada di ID_MAP yang ditampilkan
+# 5. FIX: duplicate camera_input key
 # =====================================================================
 
 import streamlit as st
@@ -57,19 +57,16 @@ html, body, [data-testid="stAppViewContainer"] {
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────
-# ID_MAP — DARI COLAB (HANYA KELAS VALID)
+# ID_MAP — HANYA KELAS VALID
 # ─────────────────────────────────────────────────────────────────────
 ID_MAP_VALID = {
-    # COCO (model1) — RELEVAN
     "person":"orang","car":"mobil","bus":"bus","truck":"truk",
     "motorcycle":"motor","bicycle":"sepeda","train":"kereta",
     "stop sign":"rambu stop","traffic light":"lampu lalu lintas",
-    # Model2 (SafeWalkBD)
     "Stairs":"tangga","Pothole":"lubang","Over-bridge":"jembatan penyeberangan",
     "Railway":"rel kereta","Road-barrier":"pembatas jalan","Sidewalk":"trotoar",
     "Crosswalk":"jalur penyeberangan","Obstacle":"rintangan","Pole":"tiang",
     "Vehicle":"kendaraan","Animal":"hewan",
-    # Model3 (rambu Indonesia)
     "Dilarang Masuk":"dilarang masuk",
     "Dilarang Parkir":"dilarang parkir",
     "Dilarang Berhenti":"dilarang berhenti",
@@ -95,9 +92,7 @@ KELAS_VALID_LOWER = {k.lower(): k for k in KELAS_VALID}
 def id_nama(n):
     if not isinstance(n, str): return str(n)
     nc = n.strip()
-    # Coba exact match
     if nc in ID_MAP_VALID: return ID_MAP_VALID[nc]
-    # Coba case-insensitive
     for k, v in ID_MAP_VALID.items():
         if k.lower() == nc.lower(): return v
     return nc
@@ -118,7 +113,6 @@ session_defaults = {
     'ocr_frame_count': 0,
     'last_uploaded_name': None,
     'last_ocr_text': '',
-    'audio_played': set(),
 }
 for key, value in session_defaults.items():
     if key not in st.session_state:
@@ -170,14 +164,10 @@ RAMBU_KW = {'rambu', 'lampu lalu lintas', 'stop sign', 'dilarang',
 
 def is_rambu(name):
     n = name.lower()
-    # Cek di ID_MAP dulu
-    for k in ID_MAP_VALID.keys():
-        if k.lower() == n:
-            # Cek apakah termasuk rambu
-            for rk in RAMBU_KW:
-                if rk in n:
-                    return True
-    return any(rk in n for rk in RAMBU_KW)
+    for rk in RAMBU_KW:
+        if rk in n:
+            return True
+    return False
 
 def is_obstacle(name):
     n = name.lower()
@@ -216,7 +206,7 @@ def generate_alert(name, pos_x, area):
     else: return f"Hati-hati, ada {nama} {pos}. {arah} pelan-pelan."
 
 # ============================================================
-# OCR - VERSI v5.1 (BAGUS)
+# OCR - VERSI v5.1
 # ============================================================
 COMMON_WORDS = {
     'jln':'jalan','jl':'jalan','dlarang':'dilarang','dlrang':'dilarang',
@@ -297,12 +287,12 @@ def texts_are_similar(t1, t2, threshold=0.75):
     return len(s1 & s2) / len(s1 | s2) >= threshold
 
 # ============================================================
-# DETEKSI - FILTER KETAT (HANYA KELAS VALID)
+# DETEKSI - FILTER KETAT
 # ============================================================
 def process_frame_detection(frame, model, conf=0.4, is_m2=False):
     if model is None: return frame, []
     try:
-        effective_conf = 0.10 if is_m2 else conf  # M2 conf rendah untuk lubang
+        effective_conf = 0.10 if is_m2 else conf
         results = model.predict(frame, conf=effective_conf, iou=0.45, verbose=False)
         detections = []
         
@@ -317,28 +307,24 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                 for box, conf_score, cls_idx in zip(boxes, confidences, classes):
                     cls_name = result.names[cls_idx]
                     
-                    # FILTER: HANYA KELAS YANG ADA DI ID_MAP
                     cls_lower = cls_name.lower()
                     if cls_lower not in KELAS_VALID_LOWER:
                         continue
                     
-                    cls_name = KELAS_VALID_LOWER[cls_lower]  # Normalize
+                    cls_name = KELAS_VALID_LOWER[cls_lower]
                     
                     x1, y1, x2, y2 = map(int, box)
                     area = (x2 - x1) * (y2 - y1)
                     area_ratio = area / (fw * fh)
                     
-                    # FILTER: area terlalu kecil
                     if area_ratio < 0.002:
                         continue
                     
                     pos_x = ((x1 + x2) / 2) / fw
                     
-                    # Klasifikasi
                     is_obs = is_obstacle(cls_name)
                     is_ram = is_rambu(cls_name)
                     
-                    # Risk level
                     if is_obs:
                         if area_ratio > 0.04 and conf_score > 0.20:
                             risk_level = 'BAHAYA'
@@ -351,7 +337,6 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
                     else:
                         risk_level = 'AMAN'
                     
-                    # Hanya tampilkan yang relevan
                     if risk_level == 'AMAN' and area_ratio < 0.01:
                         continue
                     
@@ -375,8 +360,7 @@ def process_frame_detection(frame, model, conf=0.4, is_m2=False):
         logger.error(f"Detection error: {e}")
         return frame, []
 
-def process_frame_detection_multi(frame, m1, m2, m3, conf=0.7):
-    """YOLO conf=0.7 (seperti Colab)"""
+def process_frame_detection_multi(frame, m1, m2, m3):
     out = frame.copy()
     all_d = []
     if m1:
@@ -391,14 +375,13 @@ def process_frame_detection_multi(frame, m1, m2, m3, conf=0.7):
     return out, all_d
 
 # ─────────────────────────────────────────────────────────────────────
-# ALERT - SUARA SAMPAI AKHIR
+# ALERT
 # ─────────────────────────────────────────────────────────────────────
 def handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_ph, cooldown=5):
     danger = [d for d in dets if d['risk_level'] == 'BAHAYA']
     waspada = [d for d in dets if d['risk_level'] == 'WASPADA']
     rambu = [d for d in dets if d['risk_level'] == 'RAMBU']
 
-    # SUARA KELUAR TERUS SAMPAI AKHIR (dengan cooldown)
     if danger and enable_audio:
         d = danger[0]
         key = d['class']
@@ -489,7 +472,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.6</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu v5.7</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -568,7 +551,7 @@ with tab1:
     if show_logs: log_ph = st.expander("📋 Logs").empty()
 
     # ============================================================
-    # WEBCAM
+    # WEBCAM (key="cam_tab1")
     # ============================================================
     if mode == "📹 Webcam (Foto)":
         st.markdown('<div class="alert-info">📸 Ambil foto → otomatis deteksi. Klik "Baca Teks" untuk OCR.</div>', unsafe_allow_html=True)
@@ -577,7 +560,7 @@ with tab1:
         with col_btn:
             btn_ocr_cam = st.button("📖 Baca Teks", key="ocr_cam", use_container_width=True)
         
-        cam = st.camera_input("📸 Ambil foto")
+        cam = st.camera_input("📸 Ambil foto", key="cam_tab1")  # ← KEY UNIK
         
         if cam:
             if not st.session_state.model1 and not st.session_state.model2:
@@ -683,11 +666,9 @@ with tab1:
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # ALERT — SUARA SAMPAI AKHIR
                     now_time = time.time()
                     danger_list, rambu_list = handle_alerts(dets, now_time, enable_audio, warn_ph, status_ph, audio_alert_ph, cooldown=alert_cooldown)
 
-                    # OCR
                     if st.session_state.ocr_triggered_vid and ocr is not None:
                         st.session_state.ocr_frame_count += 1
                         if st.session_state.ocr_frame_count % ocr_scan_interval == 0:
@@ -701,7 +682,6 @@ with tab1:
                     if show_logs:
                         log_ph.markdown('<br>'.join([f'[{ts}] {m}' for ts, msg in st.session_state.log[:10]]), unsafe_allow_html=True)
                     
-                    # Delay agar video normal
                     delay = (frame_skip / fps)
                     time.sleep(max(delay - 0.05, 0.001))
 
@@ -715,7 +695,7 @@ with tab1:
                 except: pass
 
 # ═════════════════════════════════════════════════════════════════════
-# TAB 2: TEXT READING
+# TAB 2: TEXT READING (key="cam_tab2_ocr")
 # ═════════════════════════════════════════════════════════════════════
 with tab2:
     st.markdown("### 📖 Text Reading")
@@ -737,7 +717,7 @@ with tab2:
                 st.success("🔊 Audio diputar")
 
     if mode2 == "📷 Capture":
-        cam_ocr = st.camera_input("📸 Ambil foto")
+        cam_ocr = st.camera_input("📸 Ambil foto", key="cam_tab2_ocr")  # ← KEY UNIK
         if cam_ocr is not None:
             if st.session_state.ocr_engine is None: st.error("⚠️ Load OCR dulu!")
             else:
@@ -788,6 +768,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v5.6</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v5.7</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
