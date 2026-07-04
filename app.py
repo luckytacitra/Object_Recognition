@@ -1,6 +1,6 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA v7.0 (CLOUD / STREAMLIT SHARE EDITION)
-# FIX: WebRTC untuk Cloud, Optimasi Performa, Akurasi YOLO & OCR
+# ASISTEN NAVIGASI TUNANETRA v7.1 (CLOUD / STREAMLIT SHARE EDITION)
+# FIX: Kamera WebRTC Anti-Crash & Anti-Macet
 # =====================================================================
 
 import streamlit as st
@@ -71,7 +71,7 @@ def add_log(msg):
     st.session_state.log = st.session_state.log[:30]
 
 # ─────────────────────────────────────────────────────────────────────
-# AUDIO & TTS (STABIL UNTUK BROWSER CLOUD)
+# AUDIO & TTS
 # ─────────────────────────────────────────────────────────────────────
 def play_audio_safe(placeholder, audio_bytes):
     if not audio_bytes: return False
@@ -226,7 +226,7 @@ def texts_are_similar(t1, t2, threshold=0.75):
 def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph, now_time):
     text = perform_ocr_on_frame(frame, ocr_eng, min_conf)
     if (now_time - st.session_state.last_ocr_time) > 6.0:
-        st.session_state.last_ocr_text = '' # Reset memori jika 6 detik tidak ada teks
+        st.session_state.last_ocr_text = '' 
         
     if text and text != "Tidak ada teks terdeteksi" and len(text) > 3:
         st.session_state.last_ocr_time = now_time
@@ -354,10 +354,11 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     else:
         warn_ph.markdown('<div class="alert-success">✅ Area Terpantau Aman</div>', unsafe_allow_html=True)
         status_ph.markdown('<div class="pills"><span class="pill pill-run">● YOLO</span><span class="pill pill-ok">● Aman</span></div>', unsafe_allow_html=True)
+
     return danger, rambu
 
 # ─────────────────────────────────────────────────────────────────────
-# WEBRTC PROCESSOR UNTUK CLOUD (STREAMLIT SHARE / COLAB)
+# WEBRTC PROCESSOR UNTUK CLOUD (ANTI-CRASH)
 # ─────────────────────────────────────────────────────────────────────
 if WEBRTC_OK:
     class YOLOLiveProcessor(VideoProcessorBase):
@@ -367,27 +368,34 @@ if WEBRTC_OK:
             self.frame_skip = 2
             self._cnt = 0
             self.result_queue = queue.Queue(maxsize=5)
-            self._last_dets = []
+            self._last_ann = None
 
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
-            self._cnt += 1
-            
-            # Optimasi Cloud: Resize dulu ke 480p supaya ringan diproses Server
-            h, w = img.shape[:2]
-            img_small = cv2.resize(img, (640, 480))
-            
-            if self._cnt % self.frame_skip == 0:
-                ann, dets = process_frame_detection_multi(img_small, self.model1, self.model2, self.model3, self.conf)
-                self._last_dets = dets
-                self._last_ann = cv2.resize(ann, (w, h)) # Kembalikan ke resolusi asli browser
-                try: self.result_queue.put_nowait(dets)
-                except queue.Full: pass
-                out_frame = self._last_ann
-            else:
-                out_frame = self._last_ann if hasattr(self, '_last_ann') else img
+            try:
+                self._cnt += 1
+                h, w = img.shape[:2]
                 
-            return av.VideoFrame.from_ndarray(out_frame, format="bgr24")
+                # Optimasi agar kamera tidak berat/mati di Cloud
+                scale = 480 / w
+                new_w, new_h = 480, int(h * scale)
+                img_small = cv2.resize(img, (new_w, new_h))
+                
+                if self._cnt % self.frame_skip == 0:
+                    ann, dets = process_frame_detection_multi(img_small, self.model1, self.model2, self.model3, self.conf)
+                    # Kembalikan resolusi sesuai permintaan frame browser asli
+                    self._last_ann = cv2.resize(ann, (w, h))
+                    try: self.result_queue.put_nowait(dets)
+                    except queue.Full: pass
+                    out_frame = self._last_ann
+                else:
+                    out_frame = self._last_ann if self._last_ann is not None else img
+                    
+                return av.VideoFrame.from_ndarray(out_frame, format="bgr24")
+            except Exception as e:
+                logger.error(f"WebRTC Error: {e}")
+                # Jika crash, kembalikan frame asli agar kamera TIDAK MATI
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ─────────────────────────────────────────────────────────────────────
 # LOAD MODELS
@@ -412,7 +420,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu (Cloud Edition)</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu (Cloud Edition v7.1)</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -489,13 +497,13 @@ with tab1:
     with c3: m_fps = st.empty()
 
     # ============================================================
-    # MODE WEBCAM (WebRTC untuk Cloud)
+    # MODE WEBCAM (WebRTC untuk Cloud - ANTI CRASH)
     # ============================================================
     if mode == "📹 Webcam LIVE (Cloud)":
         if not WEBRTC_OK:
             st.error("⚠️ Library belum terpasang. Tambahkan 'streamlit-webrtc' dan 'av' ke requirements.txt")
         else:
-            st.info("💡 Mode ini mengaktifkan kamera melalui browser untuk server Cloud.")
+            st.info("💡 Klik START untuk menyalakan kamera. Jika hanya muncul video mentah, berarti model YOLO sedang melakukan loading.")
             ctx = webrtc_streamer(
                 key="live-yolo",
                 mode=WebRtcMode.SENDRECV,
@@ -693,6 +701,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v7.0 (Cloud Edition)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v7.1 (Cloud Edition)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
