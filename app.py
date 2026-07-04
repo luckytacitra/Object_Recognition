@@ -1,6 +1,6 @@
 # =====================================================================
-# ASISTEN NAVIGASI TUNANETRA v7.1 (CLOUD / STREAMLIT SHARE EDITION)
-# FIX: Kamera WebRTC Anti-Crash & Anti-Macet
+# ASISTEN NAVIGASI TUNANETRA v7.2 (CLOUD EDITION - NETWORK FIX)
+# FIX: Penambahan STUN Server Extra untuk menembus Firewall Jaringan
 # =====================================================================
 
 import streamlit as st
@@ -242,7 +242,7 @@ def handle_ocr_dedup(frame, ocr_eng, min_conf, en_tts, ocr_ph, aocr_ph, now_time
     return False
 
 # ─────────────────────────────────────────────────────────────────────
-# DETEKSI YOLO - LUBANG & ORANG FIX
+# DETEKSI YOLO 
 # ─────────────────────────────────────────────────────────────────────
 OBSTACLE_KW = ['pothole', 'lubang', 'hole', 'stairs', 'stair', 'step', 'tangga', 'obstacle', 'rintangan', 'road-barrier', 'barrier', 'pembatas', 'pole', 'tiang']
 VEHICLE_KW = ['car', 'mobil', 'bus', 'truck', 'truk', 'vehicle', 'kendaraan', 'motorcycle', 'motor', 'bicycle', 'sepeda', 'train', 'kereta']
@@ -358,7 +358,7 @@ def handle_alerts_once(dets, now_time, enable_audio, warn_ph, status_ph, audio_p
     return danger, rambu
 
 # ─────────────────────────────────────────────────────────────────────
-# WEBRTC PROCESSOR UNTUK CLOUD (ANTI-CRASH)
+# WEBRTC PROCESSOR UNTUK CLOUD (ANTI-CRASH + FALLBACK STUN)
 # ─────────────────────────────────────────────────────────────────────
 if WEBRTC_OK:
     class YOLOLiveProcessor(VideoProcessorBase):
@@ -375,16 +375,13 @@ if WEBRTC_OK:
             try:
                 self._cnt += 1
                 h, w = img.shape[:2]
-                
-                # Optimasi agar kamera tidak berat/mati di Cloud
                 scale = 480 / w
                 new_w, new_h = 480, int(h * scale)
                 img_small = cv2.resize(img, (new_w, new_h))
                 
                 if self._cnt % self.frame_skip == 0:
                     ann, dets = process_frame_detection_multi(img_small, self.model1, self.model2, self.model3, self.conf)
-                    # Kembalikan resolusi sesuai permintaan frame browser asli
-                    self._last_ann = cv2.resize(ann, (w, h))
+                    self._last_ann = cv2.resize(ann, (w, h)) 
                     try: self.result_queue.put_nowait(dets)
                     except queue.Full: pass
                     out_frame = self._last_ann
@@ -394,7 +391,6 @@ if WEBRTC_OK:
                 return av.VideoFrame.from_ndarray(out_frame, format="bgr24")
             except Exception as e:
                 logger.error(f"WebRTC Error: {e}")
-                # Jika crash, kembalikan frame asli agar kamera TIDAK MATI
                 return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ─────────────────────────────────────────────────────────────────────
@@ -420,7 +416,7 @@ def load_ocr():
 # ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([0.1, 0.9])
 with c1: st.markdown('<div class="header-logo">👁️</div>', unsafe_allow_html=True)
-with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu (Cloud Edition v7.1)</p></div>', unsafe_allow_html=True)
+with c2: st.markdown('<div class="header-text"><h1>Asisten Navigasi Tunanetra</h1><p>Deteksi Objek & Teks Terpadu (Cloud Edition v7.2)</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- SIDEBAR ---
@@ -497,19 +493,31 @@ with tab1:
     with c3: m_fps = st.empty()
 
     # ============================================================
-    # MODE WEBCAM (WebRTC untuk Cloud - ANTI CRASH)
+    # MODE WEBCAM (WebRTC untuk Cloud - DENGAN EXTRA STUN SERVERS)
     # ============================================================
     if mode == "📹 Webcam LIVE (Cloud)":
         if not WEBRTC_OK:
             st.error("⚠️ Library belum terpasang. Tambahkan 'streamlit-webrtc' dan 'av' ke requirements.txt")
         else:
-            st.info("💡 Klik START untuk menyalakan kamera. Jika hanya muncul video mentah, berarti model YOLO sedang melakukan loading.")
+            st.info("💡 Pastikan jaringan internet kamu tidak memblokir akses kamera (Jika error, coba pakai Hotspot HP).")
+            
+            # STUN SERVERS EXTRA DITAMBAHKAN DI SINI UNTUK MENCEGAH TIMEOUT
             ctx = webrtc_streamer(
                 key="live-yolo",
                 mode=WebRtcMode.SENDRECV,
                 video_processor_factory=YOLOLiveProcessor,
-                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                rtc_configuration={
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun1.l.google.com:19302"]},
+                        {"urls": ["stun:stun2.l.google.com:19302"]},
+                        {"urls": ["stun:stun3.l.google.com:19302"]},
+                        {"urls": ["stun:stun4.l.google.com:19302"]},
+                        {"urls": ["stun:global.stun.twilio.com:3478"]}
+                    ]
+                },
                 async_processing=True,
+                media_stream_constraints={"video": True, "audio": False},
             )
 
             if ctx.video_processor:
@@ -603,7 +611,6 @@ with tab1:
                     for d in dets: st.session_state.detection_history.append(d)
                     st.session_state.detection_history = st.session_state.detection_history[-500:]
 
-                    # WAKTU VIDEO ASLI agar suara tidak macet
                     danger_list, rambu_list = handle_alerts_once(dets, video_sec, enable_audio, warn_ph, status_ph, audio_alert_ph, alert_cooldown)
 
                     if st.session_state.ocr_triggered_vid and ocr is not None:
@@ -701,6 +708,6 @@ with tab3:
 st.divider()
 st.markdown("""
 <div style="text-align:center; color:#999; font-size:0.8rem; padding:1rem 0;">
-    <strong>Asisten Navigasi Tunanetra v7.1 (Cloud Edition)</strong> • YOLOv11 • EasyOCR • gTTS
+    <strong>Asisten Navigasi Tunanetra v7.2 (Cloud Edition)</strong> • YOLOv11 • EasyOCR • gTTS
 </div>
 """, unsafe_allow_html=True)
